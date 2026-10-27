@@ -1,0 +1,12 @@
+COLE AQUI A CONFIGURAÇÃO DO FIREBASE
+
+Apague todo este texto e cole no lugar o bloco que o Firebase mostra ao registrar o app da Web
+(o trecho "const firebaseConfig = { apiKey: ..., projectId: ... }").
+Pode colar o bloco inteiro, com as linhas de "import", que o app encontra o que precisa.
+
+Exemplo de formato (não use estes valores):
+const firebaseConfig = {
+  apiKey: "COLE_AQUI",
+  authDomain: "seu-projeto.firebaseapp.com",
+  projectId: "seu-projeto",
+};

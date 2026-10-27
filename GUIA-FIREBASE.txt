@@ -1,0 +1,75 @@
+CADERNETA — SINCRONIZAÇÃO AUTOMÁTICA E RECUPERAÇÃO DE SENHA POR E-MAIL
+======================================================================
+Custo: zero. Usa o plano gratuito do Firebase (Google), que não pede cartão.
+Seus lançamentos sobem já criptografados. Uma cópia da chave fica na sua conta
+Firebase para permitir a recuperação por e-mail; por isso, proteja bem o seu Gmail
+(senha forte e verificação em duas etapas).
+
+Os nomes dos botões no site do Firebase podem mudar um pouco. Se algum não bater,
+procure pelo nome mais parecido.
+
+PARTE A — CRIAR O PROJETO NO FIREBASE (no computador, uns 10 minutos)
+ 1. Entre em https://console.firebase.google.com com sua conta Google
+    (bruunotriani@gmail.com).
+ 2. "Criar um projeto" (ou "Adicionar projeto"). Nome: caderneta.
+    Pode DESATIVAR o Google Analytics. Clique em "Criar projeto".
+ 3. LOGIN: no menu da esquerda, "Criação" (Build) › "Authentication" ›
+    "Vamos começar". Na aba "Método de login", escolha "E-mail/senha",
+    ATIVE a primeira opção e clique em "Salvar".
+    (Opcional) Aba "Modelos" › idioma: Português, para o e-mail de redefinição
+    chegar em português.
+ 4. BANCO DE DADOS: menu "Criação" › "Firestore Database" › "Criar banco de
+    dados". Se perguntar a edição, escolha "Standard". Local: southamerica-east1
+    (São Paulo). Escolha "Iniciar no modo de produção" e clique em "Criar".
+ 5. REGRAS: ainda no Firestore, abra a aba "Regras". Apague tudo e cole:
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
+
+    Clique em "Publicar". (Isso garante que só você acessa os seus dados.)
+ 6. CONFIGURAÇÃO: clique na engrenagem ao lado de "Visão geral do projeto" ›
+    "Configurações do projeto". Em "Seus apps", clique no ícone da Web </>.
+    Apelido: caderneta. NÃO marque "Firebase Hosting". Clique em "Registrar app".
+    Aparece um bloco com "const firebaseConfig = { apiKey: ... }". Copie esse
+    bloco (pode copiar tudo que aparecer).
+
+PARTE B — COLOCAR A CONFIGURAÇÃO NO APP (GitHub)
+ 7. No GitHub, abra o repositório caderneta. Envie os arquivos novos desta pasta
+    ("Add file" › "Upload files", arraste tudo, "Commit changes").
+ 8. Clique no arquivo firebase-config.txt › ícone de lápis (Edit) › apague o
+    texto e cole o bloco copiado no passo 6 › "Commit changes".
+ 9. Espere 1 a 2 minutos para o site atualizar.
+
+PARTE C — LIGAR NOS APARELHOS
+10. COMPUTADOR: feche e abra a Caderneta (com internet). Entre com sua senha.
+    Ajustes (engrenagem) › "Ativar sincronização". Confira o e-mail
+    (bruunotriani@gmail.com), digite a MESMA senha do app e toque em "Ativar".
+    No topo deve aparecer "Sincronizado".
+11. IPHONE: abra a Caderneta pelo ícone (com internet).
+    - Se ainda não tem nada lá: na tela inicial, toque em
+      "Já uso em outro aparelho: entrar com e-mail", use o mesmo e-mail e senha.
+      Todos os dados descem para o iPhone.
+    - Se já criou acesso no iPhone: entre, vá em Ajustes › "Ativar
+      sincronização" com o mesmo e-mail e senha. Os dados dos dois juntam.
+    Se o app ainda não mostrar a opção, feche-o totalmente e abra de novo
+    (ele precisa baixar a versão nova).
+
+PRONTO. A partir daqui:
+ - O que você lançar em um aparelho aparece no outro em segundos (o app confere
+   a cada minuto e sempre que você abre).
+ - Sem internet, o app funciona normal e envia tudo quando a conexão voltar.
+
+ESQUECI A SENHA
+ - Na tela de entrada, toque em "Esqueci a senha" › "Enviar e-mail".
+ - Abra o e-mail do Firebase (veja também o spam), clique no link e crie a
+   senha nova.
+ - Volte à Caderneta e entre com a nova senha. Seus dados voltam inteiros.
+ - No outro aparelho, a senha antiga ainda abre o app; a sincronização vai
+   mostrar "pausada". Toque em Ajustes › "Entrar de novo" com a nova senha e
+   ela passa a valer ali também.

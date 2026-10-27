@@ -40,7 +40,12 @@ Onde ficam seus dados
       Caderneta"). Ele vira um programa no menu Iniciar.
    Também dá para abrir o index.html direto com dois cliques, sem internet.
 
-4) PASSAR OS DADOS ENTRE IPHONE E COMPUTADOR
+4) SINCRONIZAÇÃO AUTOMÁTICA E "ESQUECI A SENHA" (Firebase gratuito)
+   Veja o passo a passo completo no arquivo GUIA-FIREBASE.txt.
+   Com ela ligada, tudo o que você lança num aparelho aparece sozinho no outro,
+   e se esquecer a senha você recebe um e-mail para criar outra.
+
+5) PASSAR OS DADOS SEM A SINCRONIZAÇÃO AUTOMÁTICA (por arquivo)
    a. No aparelho onde você lançou: Ajustes (engrenagem) › "Gerar arquivo de
       sincronização". Salve no iCloud Drive, Google Drive ou mande para você
       mesmo por e-mail ou WhatsApp.
@@ -48,17 +53,18 @@ Onde ficam seus dados
    O app junta os dados sem duplicar e fica com a alteração mais recente.
    O arquivo é protegido pela sua senha.
 
-5) TRAZER O QUE VOCÊ JÁ LANÇOU NA VERSÃO DO CLAUDE
+6) TRAZER O QUE VOCÊ JÁ LANÇOU NA VERSÃO DO CLAUDE
    Na versão do Claude: Ajustes › "Gerar arquivo de sincronização".
    Na versão própria: crie seu acesso (pode usar a mesma senha) e depois
    Ajustes › "Importar arquivo".
 
-6) ATUALIZAR O APP NO FUTURO
+7) ATUALIZAR O APP NO FUTURO
    No GitHub, abra o repositório › "Add file" › "Upload files", envie o novo
    index.html e confirme. O app atualiza na próxima vez que abrir com
    internet. Seus dados não são apagados.
 
-7) CUIDADOS
-   - Se esquecer a senha, ninguém recupera os dados. Anote em lugar seguro.
+8) CUIDADOS
+   - Sem a sincronização automática, se esquecer a senha ninguém recupera os
+     dados. Com ela ligada, use "Esqueci a senha" na tela de entrada.
    - Uma vez por mês, gere o arquivo de sincronização e guarde. É o seu backup.
    - Não limpe os dados de navegação do site do app no Safari/Chrome.

@@ -434,7 +434,7 @@ const CRYPTO = (() => {
   async function enc(key, obj){ const iv = crypto.getRandomValues(new Uint8Array(12)); const ct = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, te.encode(JSON.stringify(obj))); return {iv:b64(iv), ct:b64(ct)}; }
   async function dec(key, rec){ const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv:unb64(rec.iv)}, key, unb64(rec.ct)); return JSON.parse(td.decode(pt)); }
   const newSalt = () => b64(crypto.getRandomValues(new Uint8Array(16)));
-  return { derive, enc, dec, newSalt, ITER: 250000 };
+  return { derive, enc, dec, newSalt, b64, unb64, ITER: 250000 };
 })();
 
 /* ===================== UTIL ===================== */
@@ -510,11 +510,12 @@ async function writeRaw(rec){
   else if (S.mode === 'idb'){ try { await LDB.put(rec); } catch(e){ toast('Não foi possível salvar neste aparelho. Libere espaço e tente de novo.'); } }
   else saveLocal();
 }
-async function sealItem(item){ const c = await CRYPTO.enc(S.key, item); S.cache.set(c.ct, item); return {id:item.id, kind:'enc', iv:c.iv, ct:c.ct}; }
+async function sealItem(item){ const c = await CRYPTO.enc(S.key, item); S.cache.set(c.ct, item); return {id:item.id, kind:'enc', iv:c.iv, ct:c.ct, u:+item.upd || 0}; }
 async function storeItems(list){
   for (const it of list){ if (it.kind === 'del'){ S.items.delete(it.id); S.dels.set(it.id, it); } else { S.dels.delete(it.id); S.items.set(it.id, it); } }
   render();
   for (const it of list) await writeRaw(await sealItem(it));
+  if (FB.sess) fbMark(list.map(i => i.id));
 }
 async function put(item){ if (!S.key) return; await storeItems([{...item, upd:Date.now()}]); }
 async function putMany(list){ if (!S.key || !list.length) return; const n = Date.now(); await storeItems(list.map(i => ({...i, upd:n}))); }
@@ -524,7 +525,7 @@ async function openAll(){
   if (!S.key) return;
   const next = new Map(), dels = new Map(); let bad = 0;
   for (const r of S.raw.values()){
-    if (r.kind === 'lock') continue;
+    if (r.kind === 'lock' || r.kind === 'sess' || r.kind === 'off') continue;
     let it = r;
     if (r.kind === 'enc'){ it = S.cache.get(r.ct); if (!it){ try { it = await CRYPTO.dec(S.key, r); S.cache.set(r.ct, it); } catch(e){ bad++; continue; } } }
     if (it.kind === 'del') dels.set(it.id, it); else next.set(it.id, it);
@@ -536,6 +537,7 @@ const get = id => S.items.get(id);
 const settings = () => ({ cdi:14.15, ipca:4.8, catsOut:DEF_OUT, catsIn:DEF_IN, ...(get('settings') || {}) });
 
 async function initStore(){
+  if (!IN_CLAUDE) await fbLoadCfg();
   if (IN_CLAUDE){
     let tries = 0; while (!window.claude?.use && tries++ < 20) await new Promise(r => setTimeout(r, 100));
     if (window.claude?.use){
@@ -575,28 +577,26 @@ async function initStore(){
 /* ===================== BLOQUEIO ===================== */
 const LOCKUI = { fails: +(lsGet('caderneta.fails')||0), until: +(lsGet('caderneta.until')||0), lastActive: Date.now(), hiddenAt: 0 };
 const IDLE_MS = 5*60*1000, AWAY_MS = 60*1000;
-function lockNow(){ S.key = null; S.items = new Map(); S.dels = new Map(); S.cache = new Map(); closeSheet(); render(); }
-async function createLock(user, pass){
-  const salt = CRYPTO.newSalt();
-  const key = await CRYPTO.derive(user, pass, salt, CRYPTO.ITER);
-  const check = await CRYPTO.enc(key, {ok:true, user:user.trim()});
-  // re-cifra tudo que existir (inclui dados antigos sem senha)
-  const prevKey = S.key;
-  if (!prevKey){ S.key = key; await openAll(); }
-  const items = [...S.items.values(), ...S.dels.values()];
-  S.key = key; S.cache = new Map();
-  for (const it of items) await writeRaw(await sealItem(it));
-  await writeRaw({id:'lock', kind:'lock', v:1, salt, iter:CRYPTO.ITER, check});
+function lockNow(){ S.key = null; S.dkRaw = null; if (typeof FB !== 'undefined'){ FB.sess = null; FB.idTok = ''; } S.items = new Map(); S.dels = new Map(); S.cache = new Map(); closeSheet(); render(); }
+// A chave dos dados (DK) é aleatória; a senha só a protege. Assim dá para trocar ou redefinir a senha sem recriptografar tudo.
+async function createLock(user, pass, dkRaw){
+  if (!S.key){ S.key = await importDK(crypto.getRandomValues(new Uint8Array(32))); await openAll(); S.key = null; }
+  dkRaw = dkRaw || S.dkRaw || crypto.getRandomValues(new Uint8Array(32));
+  const salt = CRYPTO.newSalt(), K = await CRYPTO.derive(user, pass, salt, CRYPTO.ITER);
+  const check = await CRYPTO.enc(K, {ok:true, user:user.trim()}), wrap = await CRYPTO.enc(K, {dk:CRYPTO.b64(dkRaw)});
+  const rekey = !(S.dkRaw && sameBytes(S.dkRaw, dkRaw));
+  S.key = await importDK(dkRaw); S.dkRaw = dkRaw;
+  if (rekey){ S.cache = new Map(); for (const it of [...S.items.values(), ...S.dels.values()]) await writeRaw(await sealItem(it)); }
+  await writeRaw({id:'lock', kind:'lock', v:2, salt, iter:CRYPTO.ITER, check, wrap});
   lsSet('caderneta.user', user.trim());
 }
 async function unlock(user, pass){
-  const L = lockDoc();
-  const key = await CRYPTO.derive(user, pass, L.salt, L.iter);
-  try { const c = await CRYPTO.dec(key, L.check); if (!c.ok || String(c.user).toLowerCase() !== user.trim().toLowerCase()) return false; }
+  const L = lockDoc(), K = await CRYPTO.derive(user, pass, L.salt, L.iter);
+  try { const c = await CRYPTO.dec(K, L.check); if (!c.ok || String(c.user).toLowerCase() !== user.trim().toLowerCase()) return false; }
   catch(e){ return false; }
-  S.key = key; await openAll();
-  // migra registros antigos ainda sem cifra
-  const legacy = [...S.raw.values()].filter(r => r.kind !== 'enc' && r.kind !== 'lock');
+  if (L.wrap){ const w = await CRYPTO.dec(K, L.wrap); S.dkRaw = CRYPTO.unb64(w.dk); S.key = await importDK(S.dkRaw); await openAll(); }
+  else { S.key = K; S.dkRaw = null; await openAll(); await createLock(user, pass); }
+  const legacy = [...S.raw.values()].filter(r => !['enc','lock','sess','off'].includes(r.kind));
   for (const r of legacy) await writeRaw(await sealItem(r));
   return true;
 }
@@ -608,17 +608,17 @@ function vLock(){
       <label class="f">Usuário<input class="inp" id="lk-user" autocomplete="username" autocapitalize="none" required></label>
       <label class="f">Senha (mínimo 6 caracteres)<input class="inp" id="lk-pass" type="password" autocomplete="new-password" required></label>
       <label class="f">Repita a senha<input class="inp" id="lk-pass2" type="password" autocomplete="new-password" required></label>
-      <div class="callout"><b>Importante:</b> se esquecer a senha, não há como recuperar os dados. Anote em local seguro e use “Baixar backup” de vez em quando.</div>
+      <div class="callout"><b>Importante:</b> ${!IN_CLAUDE && FB.cfg ? 'depois de ativar a sincronização em Ajustes, se esquecer a senha você recebe um e-mail para criar outra.' : 'se esquecer a senha, não há como recuperar os dados. Anote em local seguro e gere o arquivo de sincronização de vez em quando.'}</div>
       <div class="err" id="lk-err"></div>
       <button class="btn pri" type="submit">Criar acesso e entrar</button>
-    </form></div>`;
+    </form>${!IN_CLAUDE && FB.cfg ? `<button class="btn" type="button" data-act="fb-join">${ic('arrows')}Já uso em outro aparelho: entrar com e-mail</button>` : ''}</div>`;
   return `<div class="lockwrap">${top('Caderneta bloqueada', 'Entre com seu usuário e senha.')}
     <form id="lockForm" class="card" autocomplete="on" style="padding:18px">
       <label class="f">Usuário<input class="inp" id="lk-user" autocomplete="username" autocapitalize="none" value="${esc(lsGet('caderneta.user')||'')}" required></label>
       <label class="f">Senha<input class="inp" id="lk-pass" type="password" autocomplete="current-password" required></label>
       <div class="err" id="lk-err">${wait ? `Muitas tentativas. Aguarde ${wait} s.` : ''}</div>
       <button class="btn pri" type="submit" ${wait?'disabled':''}>${ic('lock')}Entrar</button>
-    </form></div>`;
+    </form>${!IN_CLAUDE && FB.cfg ? `<button class="link" type="button" data-act="fb-forgot" style="align-self:center">Esqueci a senha</button>` : ''}</div>`;
 }
 async function onLockSubmit(e){
   e.preventDefault();
@@ -636,7 +636,7 @@ async function onLockSubmit(e){
   if (Date.now() < LOCKUI.until) return;
   btn.disabled = true; btn.textContent = 'Verificando…';
   const ok = await unlock(user, pass);
-  if (ok){ LOCKUI.fails = 0; lsSet('caderneta.fails', '0'); lsSet('caderneta.user', user.trim()); LOCKUI.lastActive = Date.now(); render(); return; }
+  if (ok){ LOCKUI.fails = 0; lsSet('caderneta.fails', '0'); lsSet('caderneta.user', user.trim()); LOCKUI.lastActive = Date.now(); render(); fbAfterUnlock(); return; }
   btn.disabled = false; btn.textContent = 'Entrar'; $('#lk-pass').value = '';
   LOCKUI.fails++; lsSet('caderneta.fails', String(LOCKUI.fails));
   if (LOCKUI.fails >= 5){ LOCKUI.until = Date.now() + 30000 * (LOCKUI.fails - 4); lsSet('caderneta.until', String(LOCKUI.until)); }
@@ -744,8 +744,9 @@ const TABS = [
 ];
 function renderChrome(){
   document.body.classList.toggle('hidev', UI.hide && !!S.key);
-  const unlocked = !!S.key, cloud = S.mode === 'cloud';
-  $('#hdr').innerHTML = `<span class="sync" title="${cloud ? 'Sincronizado com sua conta' : 'Salvo só neste aparelho'}"><span class="dot ${cloud ? 'on' : ''}"></span>${cloud ? 'Sincronizado' : 'Neste aparelho'}</span>` + (unlocked ? `
+  const unlocked = !!S.key, fbOk = !IN_CLAUDE && unlocked && FB.sess && FB.state === 'ok', cloud = S.mode === 'cloud' || fbOk;
+  const syncTxt = cloud ? 'Sincronizado' : (unlocked && FB.sess) ? ({offline:'Sem internet', login:'Sincronização pausada', erro:'Erro ao sincronizar'}[FB.state] || 'Sincronizando…') : 'Neste aparelho';
+  $('#hdr').innerHTML = `<span class="sync" title="${cloud ? 'Sincronizado com sua conta' : 'Salvo só neste aparelho'}"><span class="dot ${cloud ? 'on' : ''}"></span>${syncTxt}</span>` + (unlocked ? `
     <button class="icon-btn" data-act="toggle-hide" aria-label="${UI.hide ? 'Mostrar valores' : 'Ocultar valores'}" title="${UI.hide ? 'Mostrar valores' : 'Ocultar valores'}">${ic(UI.hide ? 'eyeoff' : 'eye')}</button>
     <button class="icon-btn" data-act="settings" aria-label="Ajustes" title="Ajustes">${ic('gear')}</button>
     <button class="icon-btn" data-act="lock" aria-label="Bloquear" title="Bloquear">${ic('lock')}</button>` : '');
@@ -1316,7 +1317,8 @@ function formSettings(){
   ];
   openSheet({title:'Ajustes', fields, data:{...s, catsOut:(s.catsOut||DEF_OUT).join(', '), catsIn:(s.catsIn||DEF_IN).join(', ')},
     extra:`<div class="stack" style="margin-top:14px;gap:12px">
-      <div><h3 style="margin-bottom:6px">Seus dados</h3><p class="note" style="margin:0">${S.mode === 'cloud' ? 'Guardados na sua conta Claude, criptografados com sua senha, e sincronizados entre os aparelhos.' : 'Guardados neste aparelho, criptografados com sua senha. Para levar ao outro aparelho, gere o arquivo de sincronização e importe lá.'}${lsGet('caderneta.lastsync') ? ` Última sincronização por arquivo: ${fmtD(CALC.iso(new Date(+lsGet('caderneta.lastsync'))))}.` : ''}</p></div>
+      ${fbSettingsBlock()}
+      <div><h3 style="margin-bottom:6px">Seus dados</h3><p class="note" style="margin:0">${S.mode === 'cloud' ? 'Guardados na sua conta Claude, criptografados com sua senha, e sincronizados entre os aparelhos.' : FB.sess ? 'Guardados neste aparelho e sincronizados automaticamente pelo Firebase, sempre criptografados.' : 'Guardados neste aparelho, criptografados com sua senha. Sem a sincronização automática, leve ao outro aparelho pelo arquivo de sincronização.'}${lsGet('caderneta.lastsync') ? ` Última sincronização por arquivo: ${fmtD(CALC.iso(new Date(+lsGet('caderneta.lastsync'))))}.` : ''}</p></div>
       <div class="actions"><button class="btn sm pri" data-act="sync-export">${ic('arrows')}Gerar arquivo de sincronização</button><button class="btn sm" data-act="import">${ic('doc')}Importar arquivo</button></div>
       <div class="actions"><button class="btn sm" data-act="import-bank">${ic('bank')}Importar extrato do banco</button><button class="btn sm" data-act="change-pass">${ic('lock')}Trocar usuário ou senha</button></div>
       <div class="actions"><button class="btn sm" data-act="export">Backup aberto (sem senha)</button>${[...S.items.values()].some(x=>x.ex)?'<button class="btn sm" data-act="unseed">Apagar exemplos</button>':'<button class="btn sm" data-act="seed">Carregar exemplos</button>'}</div>
@@ -1342,7 +1344,7 @@ function formChangePass(){
         let ok = false;
         try { const k = await CRYPTO.derive(oldUser, v.cur, L.salt, L.iter); const c = await CRYPTO.dec(k, L.check); ok = !!c.ok; } catch(e){}
         if (!ok){ toast('Senha atual incorreta'); return; }
-        toast('Recriptografando…'); await createLock(v.user, v.p1); toast('Usuário e senha trocados'); render();
+        toast('Trocando…'); await createLock(v.user, v.p1); if (FB.sess && !IN_CLAUDE){ try { const a = await fbReq(fbIdt('update'), {idToken: await fbToken(), password: v.p1, returnSecureToken:true}); fbSetAuth(a); await fbSaveSess(); } catch(e){ toast('Senha do app trocada, mas a da sincronização não: ' + fbErrMsg(e)); render(); return; } } toast('Usuário e senha trocados'); render();
       })();
     }});
 }
@@ -1976,6 +1978,178 @@ function seedPro(L, mk, t){
   mk({id:uid('pend'), kind:'pend', tipo:'saida', valor:129.9, desc:'Apple', data:t, onde:'k:card_ex1', cat:'Assinaturas', texto:'R$ 129,90 · Cartão principal · Apple', origem:'texto', criado:Date.now()});
 }
 
+/* ===================== SINCRONIZAÇÃO AUTOMÁTICA (FIREBASE GRATUITO) ===================== */
+// Os registros sobem já cifrados com a chave dos dados (DK). Uma cópia da DK fica na conta Firebase,
+// protegida pelas regras de acesso: é ela que permite recuperar tudo pelo e-mail se a senha for esquecida.
+const FB = { cfg:null, sess:null, idTok:'', exp:0, state:'off', busy:false, last:0, err:'', timer:null, dirty:new Set(JSON.parse(lsGet('caderneta.dirty') || '[]')) };
+const FB_DEFAULT_EMAIL = 'bruunotriani@gmail.com';
+const AUTH_ERR = /TOKEN_EXPIRED|INVALID_REFRESH_TOKEN|USER_NOT_FOUND|USER_DISABLED|INVALID_ID_TOKEN|CREDENTIAL_TOO_OLD|UNAUTHENTICATED|PERMISSION_DENIED/;
+const importDK = raw => crypto.subtle.importKey('raw', raw, {name:'AES-GCM'}, false, ['encrypt','decrypt']);
+const sameBytes = (a, b) => a && b && a.length === b.length && a.every((x, i) => x === b[i]);
+function fbParseCfg(t){
+  const k = String(t||'').match(/apiKey\s*[:=]\s*["']([^"']+)["']/), p = String(t||'').match(/projectId\s*[:=]\s*["']([^"']+)["']/);
+  return k && p && !/cole|sua|xxx/i.test(k[1]) ? {apiKey:k[1].trim(), projectId:p[1].trim()} : null;
+}
+async function fbLoadCfg(){
+  if (IN_CLAUDE) return;
+  if (/^https?:$/.test(location.protocol)){
+    try { const r = await fetch('firebase-config.txt', {cache:'no-store'}); if (r.ok){ const c = fbParseCfg(await r.text()); if (c){ FB.cfg = c; lsSet('caderneta.fbcfg', JSON.stringify(c)); return; } } } catch(e){}
+  }
+  try { FB.cfg = JSON.parse(lsGet('caderneta.fbcfg') || 'null'); } catch(e){ FB.cfg = null; }
+}
+async function fbReq(url, body, token, form){
+  const r = await fetch(url, {method: body ? 'POST' : 'GET', headers: {'Content-Type': form ? 'application/x-www-form-urlencoded' : 'application/json', ...(token ? {Authorization:'Bearer ' + token} : {})}, body: body ? (form ? body : JSON.stringify(body)) : undefined});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok){ const e = new Error(j?.error?.message || ('HTTP ' + r.status)); e.status = r.status; e.code = String(j?.error?.message || j?.error?.status || ''); throw e; }
+  return j;
+}
+const fbIdt = path => `https://identitytoolkit.googleapis.com/v1/accounts:${path}?key=${FB.cfg.apiKey}`;
+const fbBase = () => `https://firestore.googleapis.com/v1/projects/${FB.cfg.projectId}/databases/(default)/documents`;
+const fbUserPath = () => `${fbBase()}/users/${FB.sess.uid}`;
+function fbSetAuth(a, email){
+  FB.sess = {uid:a.localId || a.user_id, email:(email || a.email || FB.sess?.email || '').toLowerCase(), refresh:a.refreshToken || a.refresh_token};
+  FB.idTok = a.idToken || a.id_token; FB.exp = Date.now() + (+(a.expiresIn || a.expires_in || 3600)) * 1000;
+  lsSet('caderneta.fbemail', FB.sess.email);
+}
+const fbSignIn = (email, pass) => fbReq(fbIdt('signInWithPassword'), {email, password:pass, returnSecureToken:true});
+const fbSignUp = (email, pass) => fbReq(fbIdt('signUp'), {email, password:pass, returnSecureToken:true});
+const fbSendReset = email => fbReq(fbIdt('sendOobCode'), {requestType:'PASSWORD_RESET', email});
+async function fbToken(){
+  if (FB.idTok && Date.now() < FB.exp - 60000) return FB.idTok;
+  const a = await fbReq(`https://securetoken.googleapis.com/v1/token?key=${FB.cfg.apiKey}`, `grant_type=refresh_token&refresh_token=${encodeURIComponent(FB.sess.refresh)}`, null, true);
+  fbSetAuth(a); await fbSaveSess(); return FB.idTok;
+}
+async function fbSaveSess(){ if (!S.key || !FB.sess) return; const c = await CRYPTO.enc(S.key, FB.sess); await writeRaw({id:'fbsess', kind:'sess', iv:c.iv, ct:c.ct}); }
+async function fbLoadSess(){
+  const r = S.raw.get('fbsess'); FB.sess = null; FB.idTok = ''; FB.exp = 0;
+  if (!r || r.kind !== 'sess' || !S.key || !FB.cfg) { FB.state = 'off'; return; }
+  try { FB.sess = await CRYPTO.dec(S.key, r); FB.state = 'ok'; } catch(e){ FB.state = 'off'; }
+}
+async function fbGetKey(){
+  try { const d = await fbReq(`${fbUserPath()}/meta/keys`, null, await fbToken()); return d.fields?.dk?.stringValue ? CRYPTO.unb64(d.fields.dk.stringValue) : null; }
+  catch(e){ if (e.status === 404) return null; throw e; }
+}
+async function fbPutKey(raw){ await fbReq(`${fbBase()}:commit`, {writes:[{update:{name:`projects/${FB.cfg.projectId}/databases/(default)/documents/users/${FB.sess.uid}/meta/keys`, fields:{dk:{stringValue:CRYPTO.b64(raw)}, v:{integerValue:'1'}}}}]}, await fbToken()); }
+function fbMark(ids){ if (!FB.sess) return; ids.forEach(id => FB.dirty.add(id)); lsSet('caderneta.dirty', JSON.stringify([...FB.dirty])); clearTimeout(FB.timer); FB.timer = setTimeout(fbSync, 1500); }
+async function fbPush(){
+  const ids = [...FB.dirty]; if (!ids.length) return;
+  const docName = id => `projects/${FB.cfg.projectId}/databases/(default)/documents/users/${FB.sess.uid}/rec/${id}`;
+  for (let i = 0; i < ids.length; i += 400){
+    const chunk = ids.slice(i, i + 400);
+    const writes = chunk.map(id => S.raw.get(id)).filter(r => r && r.kind === 'enc').map(r => ({update:{name:docName(r.id), fields:{iv:{stringValue:r.iv}, ct:{stringValue:r.ct}, u:{integerValue:String(+r.u || 0)}}}}));
+    if (writes.length) await fbReq(`${fbBase()}:commit`, {writes}, await fbToken());
+    chunk.forEach(id => FB.dirty.delete(id)); lsSet('caderneta.dirty', JSON.stringify([...FB.dirty]));
+  }
+}
+async function fbPull(){
+  const ck = 'caderneta.pull.' + FB.sess.uid; let maxU = +(lsGet(ck) || 0), cursor = null, changed = false;
+  for (let guard = 0; guard < 80; guard++){
+    const sq = {from:[{collectionId:'rec'}], orderBy:[{field:{fieldPath:'u'}, direction:'ASCENDING'}, {field:{fieldPath:'__name__'}, direction:'ASCENDING'}], limit:300};
+    sq.startAt = cursor ? {values:[{integerValue:String(cursor.u)}, {referenceValue:cursor.n}], before:false} : {values:[{integerValue:String(Math.max(0, maxU - 600000))}], before:true};
+    const res = await fbReq(`${fbUserPath()}:runQuery`, {structuredQuery:sq}, await fbToken());
+    const docs = (res || []).filter(x => x.document).map(x => x.document);
+    for (const d of docs){
+      const id = d.name.split('/').pop(), u = +(d.fields?.u?.integerValue || 0), loc = S.raw.get(id);
+      if (u > maxU) maxU = u;
+      if (loc && (+loc.u || 0) >= u) continue;
+      const rec = {id, kind:'enc', iv:d.fields.iv.stringValue, ct:d.fields.ct.stringValue, u};
+      let it; try { it = await CRYPTO.dec(S.key, rec); } catch(e){ continue; }
+      await writeRaw(rec); S.cache.set(rec.ct, it);
+      if (it.kind === 'del'){ S.items.delete(id); S.dels.set(id, it); } else { S.dels.delete(id); S.items.set(id, it); }
+      changed = true;
+    }
+    if (docs.length < 300) break;
+    const last = docs[docs.length - 1]; cursor = {u:+last.fields.u.integerValue, n:last.name};
+  }
+  lsSet(ck, String(maxU));
+  if (changed) render();
+}
+async function fbSync(){
+  if (IN_CLAUDE || !S.key || !FB.sess || !FB.cfg || FB.busy) return;
+  FB.busy = true;
+  try { await fbPull(); await fbPush(); FB.state = 'ok'; FB.last = Date.now(); FB.err = ''; }
+  catch(e){ FB.err = e.message; FB.state = AUTH_ERR.test(e.code || '') ? 'login' : (!navigator.onLine || e instanceof TypeError) ? 'offline' : 'erro'; }
+  finally { FB.busy = false; renderChrome(); }
+}
+async function fbAfterUnlock(){ if (IN_CLAUDE) return; await fbLoadSess(); renderChrome(); if (FB.sess) fbSync(); }
+// Liga a sincronização neste aparelho (cria a conta na primeira vez).
+async function fbEnable(email, pass){
+  email = email.trim().toLowerCase(); let a;
+  try { a = await fbSignIn(email, pass); }
+  catch(e){
+    if (!/INVALID_LOGIN_CREDENTIALS|EMAIL_NOT_FOUND|INVALID_PASSWORD/.test(e.code)) throw e;
+    try { a = await fbSignUp(email, pass); } catch(e2){ if (/EMAIL_EXISTS/.test(e2.code)) throw new Error('Senha incorreta para este e-mail.'); throw e2; }
+  }
+  fbSetAuth(a, email);
+  const remote = await fbGetKey();
+  if (!remote) await fbPutKey(S.dkRaw);
+  else if (!sameBytes(remote, S.dkRaw)){ S.key = await importDK(remote); S.dkRaw = remote; }
+  S.cache = new Map();
+  const items = [...S.items.values(), ...S.dels.values()];
+  for (const it of items) await writeRaw(await sealItem(it));
+  await createLock(lsGet('caderneta.user') || email, pass, S.dkRaw);
+  await fbSaveSess(); FB.state = 'ok';
+  fbMark(items.map(i => i.id)); await fbSync();
+}
+// Entra com e-mail e senha (aparelho novo ou depois de redefinir a senha pelo e-mail).
+async function fbRecover(email, pass){
+  email = email.trim().toLowerCase();
+  const a = await fbSignIn(email, pass); fbSetAuth(a, email);
+  const dk = await fbGetKey(); if (!dk) throw new Error('Esta conta ainda não tem dados sincronizados. Ative a sincronização no aparelho onde você já usa a Caderneta.');
+  S.dkRaw = dk; S.key = await importDK(dk); S.cache = new Map(); await openAll();
+  await createLock(lsGet('caderneta.user') || email, pass, dk);
+  if (!lsGet('caderneta.user')) lsSet('caderneta.user', email);
+  await fbSaveSess(); FB.state = 'ok'; LOCKUI.fails = 0; lsSet('caderneta.fails', '0'); LOCKUI.lastActive = Date.now();
+  render(); await fbSync();
+}
+function fbStatusText(){
+  if (!FB.sess) return '';
+  const ago = FB.last ? Math.round((Date.now() - FB.last) / 60000) : null;
+  return {ok:`Ativa · ${esc(FB.sess.email)}${ago !== null ? ` · ${ago < 1 ? 'sincronizado agora' : `há ${ago} min`}` : ''}`, offline:'Sem internet: o que você lançar sobe quando a conexão voltar.', login:'Pausada: entre de novo com sua senha.', erro:`Erro ao sincronizar: ${esc(FB.err)}`}[FB.state] || '';
+}
+function fbSettingsBlock(){
+  if (IN_CLAUDE) return '';
+  if (!FB.cfg) return `<div class="callout"><b>Sincronização automática e recuperação por e-mail</b><br><span class="small">Ainda não configuradas. Siga o passo a passo do Firebase e cole a configuração no arquivo firebase-config.txt do GitHub, ou cole aqui:</span>
+    <textarea id="fb-cfg" class="inp" rows="4" style="margin-top:8px;font-size:13px" placeholder="const firebaseConfig = { apiKey: ..., projectId: ... }"></textarea>
+    <button class="btn sm pri" style="margin-top:8px" data-act="fb-savecfg">Salvar configuração</button></div>`;
+  if (!FB.sess) return `<div class="callout"><b>Sincronização automática</b><br><span class="small">Configurada, mas desligada neste aparelho. Ao ativar, tudo o que você lançar aqui aparece sozinho nos outros aparelhos, e você pode redefinir a senha por e-mail.</span><br><button class="btn sm pri" style="margin-top:8px" data-act="fb-enable">${ic('arrows')}Ativar sincronização</button></div>`;
+  return `<div class="callout"><b>Sincronização automática</b><br><span class="small">${fbStatusText()}</span><div class="actions" style="margin-top:8px"><button class="btn sm" data-act="fb-sync">Sincronizar agora</button>${FB.state === 'login' ? '<button class="btn sm pri" data-act="fb-relogin">Entrar de novo</button>' : ''}<button class="btn sm ghost" data-act="fb-off" style="color:var(--neg)">Desligar neste aparelho</button></div></div>`;
+}
+function formFbEnable(relogin){
+  openSheet({title: relogin ? 'Entrar na sincronização' : 'Ativar sincronização', fields:[{k:'email', label:'E-mail da conta', type:'email', full:true, def: FB.sess?.email || lsGet('caderneta.fbemail') || FB_DEFAULT_EMAIL}, {k:'pass', label:'Senha', type:'password', full:true}], saveLabel: relogin ? 'Entrar' : 'Ativar',
+    extra:`<p class="foot">Use a mesma senha do app. ${relogin ? 'Se você redefiniu a senha pelo e-mail, use a nova: ela passa a valer também para abrir o app neste aparelho.' : 'Na primeira vez, a conta é criada com este e-mail. Se um dia esquecer a senha, é para ele que vai o e-mail de redefinição.'}</p>`,
+    onSave: v => {
+      if (!/^\S+@\S+\.\S+$/.test(v.email)) return 'Informe um e-mail válido.';
+      if ((v.pass || '').length < 6) return 'A senha precisa de pelo menos 6 caracteres.';
+      (async () => { toast(relogin ? 'Entrando…' : 'Ativando…'); try { if (relogin){ const a = await fbSignIn(v.email.trim().toLowerCase(), v.pass); fbSetAuth(a, v.email); await createLock(lsGet('caderneta.user') || v.email, v.pass, S.dkRaw); await fbSaveSess(); FB.state = 'ok'; await fbSync(); } else await fbEnable(v.email, v.pass); toast('Sincronização ativa'); render(); } catch(e){ toast(fbErrMsg(e)); } })();
+    }});
+}
+function fbErrMsg(e){
+  const c = String(e?.code || e?.message || '');
+  if (/INVALID_LOGIN_CREDENTIALS|INVALID_PASSWORD|Senha incorreta/.test(c)) return 'E-mail ou senha incorretos.';
+  if (/TOO_MANY_ATTEMPTS/.test(c)) return 'Muitas tentativas. Espere alguns minutos.';
+  if (/EMAIL_NOT_FOUND/.test(c)) return 'Não existe conta com este e-mail.';
+  if (/OPERATION_NOT_ALLOWED|CONFIGURATION_NOT_FOUND/.test(c)) return 'Ative “E-mail/senha” em Authentication no Firebase.';
+  if (/PERMISSION_DENIED/.test(c)) return 'O Firebase recusou o acesso. Confira as regras do Firestore (passo do guia).';
+  if (/API key not valid|API_KEY_INVALID/.test(c)) return 'Configuração do Firebase inválida. Copie de novo o firebaseConfig.';
+  if (e instanceof TypeError || !navigator.onLine) return 'Sem internet. Tente de novo quando conectar.';
+  return e?.message || 'Não foi possível concluir.';
+}
+function formForgot(){
+  openSheet({title:'Esqueci a senha', fields:[{k:'email', label:'E-mail da sua conta', type:'email', full:true, def: lsGet('caderneta.fbemail') || FB_DEFAULT_EMAIL}], saveLabel:'Enviar e-mail',
+    extra:'<p class="foot">Você vai receber um e-mail do Firebase com um link para criar uma senha nova. Depois volte aqui e entre com ela: seus dados voltam inteiros.</p>',
+    onSave: v => { if (!/^\S+@\S+\.\S+$/.test(v.email)) return 'Informe um e-mail válido.'; (async () => { try { await fbSendReset(v.email.trim()); setTimeout(() => formJoin(v.email.trim(), true), 50); } catch(e){ toast(fbErrMsg(e)); } })(); }});
+}
+function formJoin(email, afterReset){
+  openSheet({title: afterReset ? 'Entrar com a nova senha' : 'Entrar com minha conta', fields:[{k:'email', label:'E-mail', type:'email', full:true, def: email || lsGet('caderneta.fbemail') || FB_DEFAULT_EMAIL}, {k:'pass', label: afterReset ? 'Nova senha' : 'Senha', type:'password', full:true}], saveLabel:'Entrar',
+    extra: afterReset ? `<div class="banner" style="margin-top:12px">${ic('check')}<span>E-mail enviado. Abra a mensagem (veja também o spam), crie a senha nova no link e digite-a aqui.</span></div>` : '<p class="foot">Use o e-mail e a senha da sincronização. Todos os seus dados descem para este aparelho.</p>',
+    onSave: v => { if ((v.pass || '').length < 6) return 'Digite a senha (mínimo 6 caracteres).'; (async () => { toast('Entrando…'); try { await fbRecover(v.email, v.pass); toast('Pronto, seus dados estão aqui'); } catch(e){ toast(fbErrMsg(e)); } })(); }});
+}
+setInterval(() => { if (S.key && FB.sess && !document.hidden) fbSync(); }, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && S.key && FB.sess) fbSync(); });
+window.addEventListener('online', () => { if (S.key && FB.sess) fbSync(); });
+
+
 /* ===================== EXEMPLOS ===================== */
 function seed(){
   const t = today(), L = [], mk = o => L.push({...o, ex:true});
@@ -2426,6 +2600,13 @@ document.addEventListener('click', async e => {
   if (el.dataset.vrec){ const v = get(el.dataset.vrec), tx = v && get(v.txId); if (tx){ put({...tx, pago:true, data: tx.data > today() ? today() : tx.data}); toast('Venda recebida'); } return; }
   if (el.dataset.addday){ return formAtiv(null, el.dataset.addday); }
   const a = el.dataset.act;
+  if (a === 'fb-forgot') return formForgot();
+  if (a === 'fb-join') return formJoin();
+  if (a === 'fb-enable'){ closeSheet(); return formFbEnable(false); }
+  if (a === 'fb-relogin'){ closeSheet(); return formFbEnable(true); }
+  if (a === 'fb-sync'){ toast('Sincronizando…'); await fbSync(); toast(FB.state === 'ok' ? 'Tudo sincronizado' : fbStatusText().replace(/<[^>]+>/g, '')); closeSheet(); return formSettings(); }
+  if (a === 'fb-off'){ if (!el.dataset.confirm){ el.dataset.confirm = '1'; el.textContent = 'Confirmar: desligar'; return; } FB.sess = null; FB.state = 'off'; await writeRaw({id:'fbsess', kind:'off'}); toast('Sincronização desligada neste aparelho'); closeSheet(); renderChrome(); return; }
+  if (a === 'fb-savecfg'){ const c = fbParseCfg($('#fb-cfg')?.value); if (!c) return toast('Não encontrei apiKey e projectId no texto colado'); FB.cfg = c; lsSet('caderneta.fbcfg', JSON.stringify(c)); toast('Configuração salva'); closeSheet(); return formSettings(); }
   if (a === 'calc-vender'){ const pv = get(CALCS.v_prog) || all('prog')[0]; return formVenda(null, {prog:pv?.id, qtd:CALCS.v_qtd, valorMilheiro:CALCS.v_milheiro}); }
   if (a === 'sheet-save'){ const err = SHEET.onSave(readForm(SHEET.fields)); if (typeof err === 'string'){ $('#sheet-err').textContent = err; return; } closeSheet(); return; }
   if (a === 'sheet-del'){ if (el.dataset.confirm){ const fn = SHEET.onDelete; closeSheet(); fn(); toast('Feito'); return; } el.dataset.confirm = '1'; el.textContent = 'Toque de novo para confirmar'; return; }
