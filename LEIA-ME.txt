@@ -1,0 +1,64 @@
+CADERNETA — VERSÃO PRÓPRIA (sem custo e sem depender do Claude)
+=================================================================
+
+O que tem nesta pasta
+- index.html ............ o aplicativo
+- manifest.webmanifest, sw.js, icon-*.png ... deixam o app instalável na tela
+  de início e funcionando sem internet
+- pasta lib ............. leitores de Excel e PDF usados na importação de extratos
+
+Onde ficam seus dados
+- No próprio aparelho (no navegador), criptografados com a sua senha.
+- Nada vai para o GitHub nem para nenhum servidor. O site só entrega o app.
+- iPhone e computador guardam cada um os seus dados. Para levar de um para o
+  outro, use Ajustes › Gerar arquivo de sincronização (veja o passo 4).
+
+
+1) PUBLICAR DE GRAÇA NO GITHUB PAGES (uma vez só, uns 10 minutos)
+   a. Crie uma conta gratuita em https://github.com
+   b. Clique em "New" (novo repositório). Nome: caderneta. Marque "Public".
+      Clique em "Create repository".
+   c. Na página do repositório, clique em "uploading an existing file".
+      Arraste TODO o conteúdo desta pasta (index.html, sw.js, manifest,
+      ícones e a pasta lib). Clique em "Commit changes".
+   d. Vá em Settings › Pages. Em "Branch", escolha "main" e "/ (root)".
+      Clique em "Save".
+   e. Espere 1 a 2 minutos. O endereço do seu app será:
+      https://SEU-USUARIO.github.io/caderneta/
+
+   O código fica público, mas é só o aplicativo vazio. Seus lançamentos
+   nunca vão para lá.
+
+2) INSTALAR NO IPHONE
+   a. Abra o endereço no Safari.
+   b. Toque em Compartilhar › "Adicionar à Tela de Início".
+   c. Use SEMPRE pelo ícone. O ícone e o Safari guardam dados separados.
+
+3) INSTALAR NO WINDOWS
+   a. Abra o mesmo endereço no Chrome ou no Edge.
+   b. Clique no ícone de instalar na barra de endereço (ou menu › "Instalar
+      Caderneta"). Ele vira um programa no menu Iniciar.
+   Também dá para abrir o index.html direto com dois cliques, sem internet.
+
+4) PASSAR OS DADOS ENTRE IPHONE E COMPUTADOR
+   a. No aparelho onde você lançou: Ajustes (engrenagem) › "Gerar arquivo de
+      sincronização". Salve no iCloud Drive, Google Drive ou mande para você
+      mesmo por e-mail ou WhatsApp.
+   b. No outro aparelho: Ajustes › "Importar arquivo" e escolha o arquivo.
+   O app junta os dados sem duplicar e fica com a alteração mais recente.
+   O arquivo é protegido pela sua senha.
+
+5) TRAZER O QUE VOCÊ JÁ LANÇOU NA VERSÃO DO CLAUDE
+   Na versão do Claude: Ajustes › "Gerar arquivo de sincronização".
+   Na versão própria: crie seu acesso (pode usar a mesma senha) e depois
+   Ajustes › "Importar arquivo".
+
+6) ATUALIZAR O APP NO FUTURO
+   No GitHub, abra o repositório › "Add file" › "Upload files", envie o novo
+   index.html e confirme. O app atualiza na próxima vez que abrir com
+   internet. Seus dados não são apagados.
+
+7) CUIDADOS
+   - Se esquecer a senha, ninguém recupera os dados. Anote em lugar seguro.
+   - Uma vez por mês, gere o arquivo de sincronização e guarde. É o seu backup.
+   - Não limpe os dados de navegação do site do app no Safari/Chrome.
