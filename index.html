@@ -158,7 +158,7 @@ details summary{list-style:none} details summary::-webkit-details-marker{display
 .seg.sm button{padding:5px 10px;font-size:12.5px}
 .monthnav{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .monthnav b{font:600 17px/1 var(--f-d);letter-spacing:-.02em}
-.search{display:flex;align-items:center;gap:8px;background:var(--card-2);border-radius:12px;padding:0 12px;color:var(--muted)}
+.search{min-width:0;display:flex;align-items:center;gap:8px;background:var(--card-2);border-radius:12px;padding:0 12px;color:var(--muted)}
 .search .ic{width:18px;height:18px}
 .search input{flex:1;min-width:0;border:0;background:transparent;height:40px;font-size:16px;color:var(--ink);outline:none}
 .chip{display:inline-flex;align-items:center;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--card-2);color:var(--muted);white-space:nowrap;vertical-align:1px;margin-left:4px;letter-spacing:0}
@@ -266,6 +266,7 @@ table.mini td:last-child{white-space:nowrap;text-align:right;padding-left:12px;f
 .lockwrap .btn.pri{height:50px;font-size:16px;border-radius:14px;margin-top:4px}
 
 body.hidev .big,body.hidev .v,body.hidev .amt,body.hidev .money,body.hidev .hero-stats b,body.hidev .flow-row b,body.hidev .stat b,body.hidev .cc-val,body.hidev table.mini td:last-child{filter:blur(10px);user-select:none}
+@media (max-width:440px){.stats3{gap:8px}.stat{padding:10px 10px}.stat b{font-size:15px;white-space:normal;overflow:visible;overflow-wrap:anywhere;line-height:1.2}.stat .label{font-size:12px}.hero-stats b{font-size:14.5px}}
 @media (max-width:420px){.form{grid-template-columns:minmax(0,1fr)}.big{font-size:36px}.pagehead h1{font-size:30px}.kpi .v{font-size:21px}}
 @media (prefers-reduced-motion:no-preference){.sheet{animation:up .22s cubic-bezier(.2,.8,.2,1)}@keyframes up{from{transform:translateY(30px);opacity:.5}}}
 
@@ -454,7 +455,8 @@ const FIN = {
     const keys = new Set(txs.filter(t => t.cartao === card.id && t.fatura).map(t => t.fatura));
     return [...keys].sort().map(k => FIN.fatura(card, k, txs));
   },
-  limiteDisp(card, txs){ return CALC.r2((+card.limite||0) - FIN.faturasDoCartao(card, txs).reduce((s,f)=>s+f.pend,0)); },
+  // Meses futuros de um fixo no cartão (assinaturas) não ocupam o limite antes da cobrança; parcelas ocupam.
+  limiteDisp(card, txs){ const t = CALC.iso(new Date()), ts = txs.filter(x => !(x.rec && x.data > t)); return CALC.r2((+card.limite||0) - FIN.faturasDoCartao(card, ts).reduce((s,f)=>s+f.pend,0)); },
   // Compromissos até "ate" (inclusive): contas não pagas + faturas pendentes que vencem até lá (vencidas inclusas).
   compromissos(txs, cards, hoje, ate){
     const receber = [], pagar = [];
@@ -629,7 +631,7 @@ async function initStore(){
 /* ===================== BLOQUEIO ===================== */
 const LOCKUI = { fails: +(lsGet('caderneta.fails')||0), until: +(lsGet('caderneta.until')||0), lastActive: Date.now(), hiddenAt: 0 };
 const IDLE_MS = 5*60*1000, AWAY_MS = 60*1000;
-function lockNow(){ LOCKUI.usePass = false; S.key = null; S.dkRaw = null; if (typeof FB !== 'undefined'){ FB.sess = null; FB.idTok = ''; } S.items = new Map(); S.dels = new Map(); S.cache = new Map(); closeSheet(); render(); }
+function lockNow(){ LOCKUI.usePass = false; if (typeof REC_DAY !== 'undefined') REC_DAY = ''; S.key = null; S.dkRaw = null; if (typeof FB !== 'undefined'){ FB.sess = null; FB.idTok = ''; } S.items = new Map(); S.dels = new Map(); S.cache = new Map(); closeSheet(); render(); }
 // A chave dos dados (DK) é aleatória; a senha só a protege. Assim dá para trocar ou redefinir a senha sem recriptografar tudo.
 async function createLock(user, pass, dkRaw){
   if (!S.key){ S.key = await importDK(crypto.getRandomValues(new Uint8Array(32))); await openAll(); S.key = null; }
@@ -945,7 +947,7 @@ function txRow(t){
   return `<div class="item" role="button" tabindex="0" data-edit="tx" data-id="${t.id}">${txTile(t)}<div class="main"><div class="t">${esc(title)}${flags}</div><div class="m">${sub.filter(Boolean).map(esc).join(' · ')}</div></div><div class="amt ${inc && !t.cartao ? 'pos' : ''}">${sign}${brl(t.valor)}</div></div>`;
 }
 function vDinheiro(){
-  const seg = `<div class="seg subnav">${[['lanc','Lançamentos'],['apagar','A pagar'],['contas','Contas'],['cartoes','Cartões'],['parc','Parcelas'],['div','Divididos'],['assin','Assinaturas'],['orc','Orçamento'],['conc','Conciliação']].map(([k,l])=>`<button class="${UI.din===k?'on':''}" data-din="${k}">${l}</button>`).join('')}</div>`;
+  const seg = `<div class="seg subnav">${[['lanc','Lançamentos'],['apagar','A pagar'],['contas','Contas'],['cartoes','Cartões'],['parc','Parcelas'],['div','Divididos'],['assin','Fixos'],['orc','Orçamento'],['conc','Conciliação']].map(([k,l])=>`<button class="${UI.din===k?'on':''}" data-din="${k}">${l}</button>`).join('')}</div>`;
   const body = {lanc:dinLanc, apagar:dinApagar, contas:dinContas, cartoes:dinCartoes, parc:dinParc, div:dinDiv, assin:dinAssin, orc:dinOrc, conc:dinConc}[UI.din]();
   return `${head('Dinheiro', `Saldo em contas <b class="money" style="color:var(--ink)">${brl(contasSaldo())}</b>`)}${seg}${body}`;
 }
@@ -1168,9 +1170,10 @@ function formTx(t, opts = {}){
   if (t.tipo === 'pagfatura'){ return formPayFatura(get(t.cartao), t.fatura, t); }
   const defOnde = t.cartao ? 'k:'+t.cartao : t.conta ? 'c:'+t.conta : (ondeOpts()[0]?.[0] || '');
   const cats = [...new Set([...(s.catsOut||DEF_OUT), ...(s.catsIn||DEF_IN), ...(t.cat ? [t.cat] : [])])];
+  const recT = t.rec ? get(t.rec) : null;
   const fields = [
     {k:'tipo', label:'Tipo', type:'select', options:[['saida','Gasto'],['entrada','Receita'],['transf','Transferência entre contas']]},
-    {k:'valor', label:'Valor (R$)', type:'number'},
+    {k:'valor', label:'Valor (R$)', type:'number', hint:'&nbsp;'},
     {k:'desc', label:'Descrição', full:true, ph:'Ex.: Supermercado'},
     {k:'cat', label:'Categoria', type:'select', options:cats},
     {k:'data', label:'Data', type:'date', hint:'No cartão: data da compra'},
@@ -1178,19 +1181,45 @@ function formTx(t, opts = {}){
     {k:'contaDest', label:'Para a conta', type:'select', options:contaOpts(), hidden:true},
     {k:'pag', label:'Forma de pagamento', type:'select', options:PAY},
     {k:'pago', label:'Já foi pago/recebido (desmarque se é previsto)', type:'check'},
+    ...(isNew ? [
+      {k:'fixo', label:'Repete todo mês (salário, aluguel, assinatura, plano de celular)', type:'check'},
+      {k:'recFim', label:'Até quando (opcional)', type:'date', hint:'Em branco: todo mês, sem data para acabar'},
+      {k:'parcelas', label:'Nº de parcelas', type:'number', def:1, hint:'No cartão, cada parcela cai numa fatura'},
+      {k:'vmodo', label:'O valor informado é', type:'select', options:[['total','O total da compra'],['parcela','O valor de cada parcela']]},
+      {k:'parcIni', label:'Parcela que cai agora', type:'number', def:1, hint:'Compra antiga? Ex.: 4 se esta é a 4ª de 10'},
+    ] : []),
+    ...(recT ? [{k:'recAll', label:'Aplicar também aos próximos meses', type:'check', def:true}] : []),
     ...divFields(),
     {k:'obs', label:'Observações', full:true},
-    ...(isNew ? [{k:'parcelas', label:'Parcelas', type:'number', def:1, hint:'No cartão, cada parcela cai numa fatura'}, {k:'fixo', label:'Repetir todo mês pelos próximos 12 meses (conta fixa)', type:'check'}] : []),
   ];
   const data = {...t, onde:defOnde, ...divData(t)};
-  openSheet({title: isNew ? 'Novo lançamento' : 'Editar lançamento', fields, data,
-    extra: !isNew && t.grupo ? `<div class="note" style="margin-top:8px">Este lançamento faz parte de um grupo (${esc(t.parc||'')}).</div>` : '',
-    onDelete: isNew ? null : () => { if (t.grupo){ const fut = TX().filter(x => x.grupo === t.grupo && x.data >= t.data).map(x=>x.id); delMany(fut); } else del(t.id); },
-    deleteLabel: !isNew && t.grupo ? 'Apagar esta e as seguintes' : 'Apagar',
+  const extra = (recT ? `<div class="callout" style="margin-top:10px">${ic('repeat')} Lançamento fixo: repete todo dia ${recT.dia}${recT.fim ? ' até ' + fmtD(recT.fim) : ', sem data para acabar'}.<div class="actions" style="margin-top:8px"><button class="btn sm" data-act="rec-skip">Apagar só este mês</button><button class="btn sm" data-act="rec-edit">Editar o fixo</button></div></div>`
+    : !isNew && t.grupo && t.parc === 'fixo' ? `<div class="callout" style="margin-top:10px">Este lançamento foi repetido por 12 meses.<div class="actions" style="margin-top:8px"><button class="btn sm pri" data-act="fixo-to-rec">${ic('repeat')}Transformar em fixo sem data para acabar</button></div></div>`
+    : !isNew && t.grupo ? `<div class="note" style="margin-top:8px">Este lançamento faz parte de um grupo (${esc(t.parc||'')}).</div>` : '') + '<div id="tx-prev" class="callout" style="margin-top:10px" hidden></div>';
+  if (recT || (t.grupo && t.parc === 'fixo')) UI.txEdit = t.id;
+  openSheet({title: isNew ? 'Novo lançamento' : 'Editar lançamento', fields, data, extra,
+    onDelete: isNew ? null : () => { if (recT) return recEnd(recT, t.data); if (t.grupo){ const fut = TX().filter(x => x.grupo === t.grupo && x.data >= t.data).map(x=>x.id); delMany(fut); } else del(t.id); },
+    deleteLabel: recT ? 'Encerrar a partir deste mês' : !isNew && t.grupo ? 'Apagar esta e as seguintes' : 'Apagar',
     onInput: v => {
-      const tr = v.tipo === 'transf', card = String(v.onde).startsWith('k:');
+      const tr = v.tipo === 'transf', card = String(v.onde).startsWith('k:'), n = Math.max(1, Math.floor(+v.parcelas || 1)), parc = isNew && v.tipo === 'saida' && n > 1 && !v.fixo;
       showF('contaDest', tr); showF('cat', !tr); showF('pag', !tr && !card); showF('pago', !card); divInput(v, v.valor, v.tipo === 'saida');
-      if (isNew){ showF('parcelas', !tr && v.tipo==='saida'); showF('fixo', !tr && !card && !(+v.parcelas > 1)); }
+      if (isNew){
+        showF('fixo', !tr && !(n > 1)); showF('recFim', !tr && !!v.fixo && !(n > 1));
+        showF('parcelas', !tr && v.tipo === 'saida' && !v.fixo); showF('vmodo', parc); showF('parcIni', parc);
+      }
+      const vh = document.querySelector('#w-valor .hint'); if (vh) vh.textContent = parc ? (v.vmodo === 'parcela' ? 'Valor de cada parcela' : 'Valor total da compra') : v.fixo ? 'Valor de cada mês' : '';
+      const pv = $('#tx-prev');
+      if (pv){
+        let txt = '';
+        if (parc && +v.valor > 0){
+          const ini = Math.min(n, Math.max(1, Math.floor(+v.parcIni || 1))), vp = v.vmodo === 'parcela' ? +v.valor : +v.valor / n, tot = v.vmodo === 'parcela' ? +v.valor * n : +v.valor, rest = n - ini + 1;
+          txt = `<b>${n}× de ${brl(vp)}</b> = ${brl(tot)} no total.${ini > 1 ? `<br>Lança da ${ini}ª à ${n}ª parcela: <b>${rest} parcela(s)</b>, ${brl(vp * rest)} a pagar.` : ''}${card ? `<br>A primeira ${ini > 1 ? 'lançada ' : ''}cai na fatura de ${monthShort(CALC.faturaOf(get(String(v.onde).slice(2)), v.data || today()).key)}.` : ''}`;
+        } else if (isNew && v.fixo && +v.valor > 0){
+          const d = +String(v.data || today()).slice(8);
+          txt = `${v.tipo === 'entrada' ? 'Receita' : 'Gasto'} de <b>${brl(v.valor)}</b> todo dia ${d}${v.recFim ? ` até ${fmtD(v.recFim)}` : ', sem data para acabar'}.${card ? '<br>No cartão, os meses seguintes entram na fatura de cada mês, mas <b>não ocupam o limite</b> antes da cobrança.' : '<br>Os próximos meses ficam como previstos até você marcar “Paguei/Recebi”.'}`;
+        }
+        pv.hidden = !txt; pv.innerHTML = txt;
+      }
       const sel = document.getElementById('f-onde');
       if (sel){ [...sel.options].forEach(o => { o.disabled = tr && !o.value.startsWith('c:'); }); }
       const catSel = document.getElementById('f-cat');
@@ -1212,14 +1241,20 @@ function formTx(t, opts = {}){
       const card = cartaoId ? get(cartaoId) : null;
       const base = {kind:'tx', tipo:v.tipo, desc:v.desc, cat:v.cat, pag: card ? 'Crédito' : v.pag, conta, cartao:cartaoId, obs:v.obs};
       if (!isNew){
-        put({...t, ...base, valor:CALC.r2(v.valor), data:v.data, pago: card ? true : v.pago, fatura: card ? CALC.faturaOf(card, v.data).key : '', div: mkDiv(v, v.valor, t.div)});
-        return;
+        const upd = {...t, ...base, valor:CALC.r2(v.valor), data:v.data, pago: card ? true : v.pago, fatura: card ? CALC.faturaOf(card, v.data).key : '', div: mkDiv(v, v.valor, t.div)};
+        if (recT && v.recAll){ const r2 = {...recT, tipo:v.tipo, valor:CALC.r2(v.valor), desc:v.desc, cat:v.cat, conta, cartao:cartaoId, pag:base.pag, div: v.dividir && v.divPessoa ? {pessoa:v.divPessoa, pct:+v.divPct || 50} : null}; putMany([upd, r2, ...recFuture(r2, t.data).filter(x => x.id !== t.id)]); return; }
+        put(upd); return;
+      }
+      if (v.fixo){
+        if (v.recFim && v.recFim < v.data) return 'A data final precisa ser depois da primeira.';
+        const r = {id:uid('rec'), kind:'rec', tipo:v.tipo, valor:CALC.r2(v.valor), desc:v.desc || v.cat, cat:v.cat, conta, cartao:cartaoId, pag:base.pag, dia:+v.data.slice(8), inicio:v.data, fim:v.recFim || '', ativo:true, skip:[], div: v.dividir && v.divPessoa ? {pessoa:v.divPessoa, pct:+v.divPct || 50} : null};
+        const occ = recBuild(r, v.pago);
+        putMany([r, ...occ]); toast(`Fixo criado: ${occ.length} mês(es) já lançados, e continua sozinho`); if (opts.after) opts.after(); return;
       }
       const n = Math.max(1, Math.floor(+v.parcelas||1)), list = [], grupo = uid('g');
       if (n > 1 && v.tipo === 'saida'){
-        CALC.split(v.valor, n).forEach((pv, i) => { const d = addMonths(v.data, i); list.push({...base, id:uid('tx'), valor:pv, data:d, parc:`${i+1}/${n}`, grupo, pago: card ? true : (i===0 ? v.pago : false), fatura: card ? CALC.faturaOf(card, d).key : ''}); });
-      } else if (v.fixo && !card){
-        for (let i=0;i<12;i++){ const d = addMonths(v.data,i); list.push({...base, id:uid('tx'), valor:CALC.r2(v.valor), data:d, parc:'fixo', grupo, pago: i===0 ? v.pago : false}); }
+        const ini = Math.min(n, Math.max(1, Math.floor(+v.parcIni || 1))), vals = v.vmodo === 'parcela' ? Array(n).fill(CALC.r2(v.valor)) : CALC.split(v.valor, n);
+        for (let i = ini; i <= n; i++){ const d = addMonths(v.data, i - ini); list.push({...base, id:uid('tx'), valor:vals[i-1], data:d, parc:`${i}/${n}`, grupo, pago: card ? true : (i===ini ? v.pago : false), fatura: card ? CALC.faturaOf(card, d).key : ''}); }
       } else list.push({...base, id:uid('tx'), valor:CALC.r2(v.valor), data:v.data, pago: card ? true : v.pago, fatura: card ? CALC.faturaOf(card, v.data).key : ''});
       if (v.dividir) list.forEach(x => { x.div = mkDiv(v, x.valor); });
       putMany(list); if (opts.after) opts.after();
@@ -2585,11 +2620,12 @@ function seed(){
   mk({id:uid('pm'), kind:'pmov', tipo:'compra_bonif', prog:'prog_livelo', qtd:20000, data:addDays(t,-5), cred:addDays(t,25), loja:'Loja de eletrônicos', valorCompra:2000, ppr:10, desc:'TV 55 polegadas'});
   mk({id:uid('w'), kind:'watch', nome:'GRU → LIS · março', cat:'passagem', alvo:3500, status:'ativo', hist:[{d:addDays(t,-20), p:4300}, {d:addDays(t,-10), p:3900}, {d:t, p:3700}]});
   { const cd = L.find(x => x.id === 'card_ex1'); if (cd) Object.assign(cd, {ptsProg:'prog_livelo', ptsUnid:'dolar', ptsTaxa:2, ptsCot:5.5, ptsDias:30}); const ps = L.find(x => x.kind === 'tcost' && x.cat === 'Passagem' && +x.milhas); if (ps) Object.assign(ps, {equiv:6200, passageiros:'Você, Ana'}); }
+  mk({id:'rec_ex1', kind:'rec', tipo:'saida', valor:49.9, desc:'Sócio-torcedor', cat:'Assinaturas', cartao:'card_ex1', conta:'', pag:'Crédito', dia:5, inicio:addMonths(t,-1).slice(0,8)+'05', fim:'', ativo:true, skip:[]});
   mk({id:uid('fx'), kind:'fx', moeda:'EUR', qtd:800, brl:5296, data:addDays(t,-15), onde:'Wise'});
   mk({id:uid('doc'), kind:'doc', pessoa:'Você', tipo:'Passaporte', validade:addMonths(t,7)});
   mk({id:uid('doc'), kind:'doc', pessoa:'Ana', tipo:'Passaporte', validade:addMonths(t,40)});
   mk({id:uid('mg'), kind:'mgoal', nome:'Europa em executiva para 2', prog:'prog_smiles', alvo:300000, prazo:addMonths(t,9)});
-  putMany(L); closeSheet(); toast('Exemplos carregados');
+  putMany(L).then(() => setTimeout(ensureRec, 300)); closeSheet(); toast('Exemplos carregados');
 }
 function unseed(){ delMany([...S.items.values()].filter(i => i.ex).map(i => i.id)); closeSheet(); toast('Exemplos apagados'); }
 function setupProgs(){
@@ -2902,7 +2938,7 @@ function openImportPreview(res, v, fname){
     const tipo = (r.valor > 0) === posIsSaida ? 'saida' : 'entrada', abs = CALC.r2(Math.abs(r.valor) * rate);
     const desc = cleanDesc(String(r.desc).replace(PREFIXOS, '')) || (tipo === 'saida' ? 'Despesa' : 'Receita'), dn = norm(r.desc);
     let reason = '', mode = 'tx', cardId = '', note = '';
-    if (existing.some(t => (r.fitid && t.fitid === r.fitid) || (t.data === r.data && Math.abs((+t.valor) - abs) < 0.005))) reason = 'já lançado';
+    if (existing.some(t => (r.fitid && t.fitid === r.fitid) || (t.data === r.data && Math.abs((+t.valor) - abs) < 0.005) || (t.rec && Math.abs((+t.valor) - abs) < 0.005 && Math.abs(CALC.days(t.data, r.data)) <= 5))) reason = 'já lançado (fixo)';
     else if (isCard && tipo === 'entrada' && /pagamento|pagto|pgto|obrigad|recebid/.test(dn)) reason = 'pagamento da fatura';
     else if (!isCard && tipo === 'saida' && /fatura|cartao de credito|pag(amento|to)?\s*(de\s*)?cart|pgto cart/.test(dn)){ cardId = matchCardPayment(r.desc, did, abs); if (cardId) mode = 'pagfatura'; else note = 'fatura de cartão não cadastrado'; }
     else if (/aplica|resgate|\bcdb\b|tesouro|poupanca|invest|\brdb\b|\blci\b|\blca\b|caixinha|cofrinho/.test(dn)) reason = 'investimento';
@@ -3443,7 +3479,7 @@ function vTripComp(){
 /* ---------- Menu lateral (computador) ---------- */
 const SIDE = [
   {tab:'inicio', label:'Início', icon:'home'},
-  {tab:'dinheiro', label:'Dinheiro', icon:'wallet', key:'din', subs:[['lanc','Lançamentos'],['apagar','A pagar'],['contas','Contas'],['cartoes','Cartões'],['parc','Parcelas ativas'],['div','Divididos'],['assin','Assinaturas'],['orc','Orçamento'],['conc','Conciliação']]},
+  {tab:'dinheiro', label:'Dinheiro', icon:'wallet', key:'din', subs:[['lanc','Lançamentos'],['apagar','A pagar'],['contas','Contas'],['cartoes','Cartões'],['parc','Parcelas ativas'],['div','Divididos'],['assin','Fixos e assinaturas'],['orc','Orçamento'],['conc','Conciliação']]},
   {tab:'planejar', label:'Planejar', icon:'chart', key:'plan', subs:PLAN_TABS},
   {tab:'patrimonio', label:'Patrimônio', icon:'pie', key:'pat', subs:[['inv','Investimentos'],['cart','Carteira'],['reco','Onde investir'],['sim','Simulador'],['metas','Metas'],['dividas','Dívidas']]},
   {tab:'pontos', label:'Milhas', icon:'star', key:'mil', subs:[['carteira','Carteira'],['mov','Movimentos'],['camp','Bônus'],['emis','Emissões'],['metas','Metas'],['vendas','Vendas'],['clubes','Clubes'],['cpf','Beneficiários'],['calc','Simular']]},
@@ -3780,7 +3816,7 @@ function formRules(){
 const subKey = d => norm(cleanDesc(d)).replace(/\d+/g, ' ').replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').filter(w => w.length >= 2).slice(0, 3).join(' ');
 function assinaturas(){
   const t = today(), since = addMonths(t, -13), g = {};
-  for (const x of TX()){ if (x.tipo !== 'saida' || isParc(x) || x.data < since || x.data > t || !x.desc) continue; const k = subKey(x.desc); if (!k) continue; (g[k] = g[k] || []).push(x); }
+  for (const x of TX()){ if (x.tipo !== 'saida' || x.rec || isParc(x) || x.data < since || x.data > t || !x.desc) continue; const k = subKey(x.desc); if (!k) continue; (g[k] = g[k] || []).push(x); }
   const out = [];
   for (const [k, xs] of Object.entries(g)){
     xs.sort((a, b) => a.data < b.data ? -1 : 1);
@@ -3798,10 +3834,10 @@ function assinaturas(){
 }
 function dinAssin(){
   const as = assinaturas(), at = as.filter(a => a.ativa), par = as.filter(a => !a.ativa), mes = at.reduce((s, a) => s + a.valor, 0), up = at.filter(a => a.aumento > .02);
-  if (!as.length) return `<section class="card">${emptyBox('repeat','purple','Nenhuma cobrança recorrente encontrada ainda. Com 2 ou 3 meses de lançamentos (ou extratos importados), a Caderneta detecta assinaturas, contas fixas e aumentos de preço sozinha.')}</section>`;
-  return `<div class="stats3"><div class="card stat"><span class="label">Por mês</span><b>${brl0(mes)}</b><small>${at.length} recorrente(s)</small></div><div class="card stat"><span class="label">Por ano</span><b>${brl0(mes * 12)}</b></div><div class="card stat"><span class="label">Aumentaram</span><b class="${up.length ? 'neg' : ''}">${up.length}</b><small>últimos 13 meses</small></div></div>
+  if (!as.length) return recSection() + `<section class="card">${emptyBox('repeat','purple','Nenhuma outra cobrança recorrente encontrada. Com 2 ou 3 meses de lançamentos (ou extratos importados), a Caderneta detecta assinaturas, contas fixas e aumentos de preço sozinha.')}</section>`;
+  return recSection() + `<div class="stats3"><div class="card stat"><span class="label">Detectadas por mês</span><b>${brl0(mes)}</b><small>${at.length} recorrente(s)</small></div><div class="card stat"><span class="label">Por ano</span><b>${brl0(mes * 12)}</b></div><div class="card stat"><span class="label">Aumentaram</span><b class="${up.length ? 'neg' : ''}">${up.length}</b><small>últimos 13 meses</small></div></div>
     ${up.length ? `<div class="banner warn">${ic('alert')}<span>${up.map(a => `<b>${esc(a.nome)}</b> subiu ${Math.round(a.aumento * 100)}% (${brl(a.antes)} → ${brl(a.valor)})`).join('<br>')}</span></div>` : ''}
-    <section class="card"><div class="card-head"><h3>Cobranças recorrentes</h3><span class="label">valor · por ano</span></div><div class="list">${at.map(a => `<div class="item" role="button" tabindex="0" data-edit="tx" data-id="${a.id}">${catTile(a.cat)}<div class="main"><div class="t">${esc(a.nome)}${a.nova ? '<span class="chip warn">nova</span>' : ''}${a.aumento > .02 ? `<span class="chip bad">+${Math.round(a.aumento * 100)}%</span>` : ''}</div><div class="m">${esc(a.cat)} · ${esc(a.onde)} · última ${fmtD(a.ultima)} · ${a.meses} meses</div></div><div class="amt"><div>${brl(a.valor)}</div><div class="m">${brl0(a.ano)}/ano</div></div></div>`).join('')}</div></section>
+    <section class="card"><div class="card-head"><h3>Detectadas nos lançamentos</h3><span class="label">ainda não são fixos</span></div><div class="list">${at.map(a => `<div class="item"><div class="main" role="button" tabindex="0" data-edit="tx" data-id="${a.id}">${''}<div class="t">${esc(a.nome)}${a.nova ? '<span class="chip warn">nova</span>' : ''}${a.aumento > .02 ? `<span class="chip bad">+${Math.round(a.aumento * 100)}%</span>` : ''}</div><div class="m">${esc(a.cat)} · ${esc(a.onde)} · última ${fmtD(a.ultima)} · ${a.meses} meses · ${brl0(a.ano)}/ano</div></div><div class="amt"><div>${brl(a.valor)}</div><button class="btn sm" style="margin-top:6px" data-mkrec="${a.id}">Tornar fixo</button></div></div>`).join('')}</div></section>
     ${par.length ? `<section class="card"><div class="card-head"><h3>Pararam de cobrar?</h3><span class="label">sem cobrança há mais de 45 dias</span></div><div class="list">${par.map(a => `<div class="item"><div class="main"><div class="t">${esc(a.nome)}</div><div class="m">última ${fmtD(a.ultima)}</div></div><div class="amt">${brl(a.valor)}</div></div>`).join('')}</div></section>` : ''}
     <p class="foot" style="margin:0">Detectado pelos lançamentos que se repetem todo mês com valor parecido. Cancelar o que não usa é o jeito mais rápido de subir a taxa de poupança.</p>`;
 }
@@ -3981,6 +4017,94 @@ function vInsights(){
     <p class="foot" style="margin:0">Calculado no próprio aparelho com os seus lançamentos (médias de 3 a 6 meses). Nada é enviado para fora.</p>`;
 }
 
+/* ===================== v9: LANÇAMENTOS FIXOS (RECORRÊNCIA) ===================== */
+// Cada fixo é um modelo ("rec"). Os meses são lançados com id previsível (rx_<rec>_<AAAA-MM>), então
+// dois aparelhos geram o mesmo lançamento sem duplicar. Sempre há 12 meses à frente; a cada dia o app completa.
+const REC_AHEAD = 12;
+let REC_DAY = '';
+const recTxId = (r, m) => `rx_${r.id}_${m}`;
+function recOcc(r, m, pago){
+  const [y, mm] = m.split('-').map(Number), last = new Date(y, mm, 0).getDate(), data = `${m}-${String(Math.min(+r.dia || 1, last)).padStart(2, '0')}`;
+  const card = r.cartao ? get(r.cartao) : null;
+  const tx = {id:recTxId(r, m), kind:'tx', tipo:r.tipo, valor:CALC.r2(r.valor), desc:r.desc, cat:r.cat, conta: card ? '' : (r.conta || ''), cartao: card ? card.id : '', pag: card ? 'Crédito' : (r.pag || 'Pix'), data, pago: card ? true : !!pago, fatura: card ? CALC.faturaOf(card, data).key : '', rec:r.id, parc:'fixo'};
+  if (r.div && r.div.pessoa && r.tipo === 'saida') tx.div = {pessoa:r.div.pessoa, pct:+r.div.pct || 50, valor:CALC.r2(r.valor * (+r.div.pct || 50) / 100), rec:false, recTx:'', recData:''};
+  if (r.ex) tx.ex = true;
+  return tx;
+}
+function recMonths(r){
+  const t = today(), end = mAdd(ym(t), REC_AHEAD - 1), stop = r.fim && ym(r.fim) < end ? ym(r.fim) : end, out = [];
+  for (let m = ym(r.inicio || t), k = 0; m <= stop && k < 600; m = mAdd(m, 1), k++) if (!(r.skip || []).includes(m)) out.push(m);
+  return out;
+}
+// Lançamentos novos de um fixo recém-criado (o primeiro mês respeita "já pago").
+function recBuild(r, pagoPrimeiro){ return recMonths(r).map((m, i) => recOcc(r, m, i === 0 ? pagoPrimeiro : false)).filter(o => o.data >= (r.inicio || '') && (!r.fim || o.data <= r.fim)); }
+// Atualiza os meses a partir de "desde" com os dados novos do fixo, preservando id e "pago".
+function recFuture(r, desde){
+  const t = today(), out = [];
+  for (const m of recMonths(r)){
+    const id = recTxId(r, m), cur = get(id), o = recOcc(r, m, cur ? cur.pago : false);
+    if (o.data < desde || (r.fim && o.data > r.fim) || o.data < (r.inicio || '')) continue;
+    if (cur && !r.cartao && cur.pago && cur.data < t) continue;
+    if (!cur && S.dels.has(id)) continue;
+    out.push(cur ? {...cur, ...o, pago:cur.pago, div: o.div ? {...o.div, rec:!!cur.div?.rec, recTx:cur.div?.recTx || '', recData:cur.div?.recData || ''} : null} : o);
+  }
+  return out;
+}
+async function ensureRec(){
+  if (!S.key) return; REC_DAY = today();
+  const list = [];
+  for (const r of all('rec')){
+    if (r.ativo === false) continue;
+    for (const m of recMonths(r)){ const id = recTxId(r, m); if (S.items.has(id) || S.dels.has(id)) continue; const o = recOcc(r, m, false); if (o.data < (r.inicio || '') || (r.fim && o.data > r.fim)) continue; list.push(o); }
+  }
+  if (list.length) await putMany(list);
+}
+// Encerra o fixo a partir da data: apaga desse mês em diante (o que já foi pago fica).
+function recEnd(r, desde){
+  const fim = addDays(desde.slice(0, 8) + '01', -1);
+  const ids = TX().filter(x => x.rec === r.id && x.data >= desde.slice(0, 8) + '01' && !(x.pago && !x.cartao && x.data < today())).map(x => x.id);
+  putMany([{...r, fim, ativo: fim >= (r.inicio || '')}]); delMany(ids); toast('Fixo encerrado');
+}
+function recSkip(tx){ const r = get(tx.rec); if (!r) return; const m = ym(tx.data); put({...r, skip:[...new Set([...(r.skip || []), m])]}); del(tx.id); toast(`${cap(monthName(m).toLowerCase())} removido deste fixo`); }
+// Converte um grupo antigo "repetir por 12 meses" em fixo sem fim.
+function fixoToRec(t){
+  const grp = TX().filter(x => x.grupo === t.grupo).sort((a, b) => a.data < b.data ? -1 : 1), keep = grp.filter(x => x.pago && (x.data < today() || x.cartao)), drop = grp.filter(x => !keep.includes(x));
+  const base = drop[0] || t, inicio = drop[0] ? drop[0].data : addMonths(grp[grp.length - 1].data, 1);
+  const r = {id:uid('rec'), kind:'rec', tipo:base.tipo, valor:CALC.r2(base.valor), desc:base.desc || base.cat, cat:base.cat, conta:base.conta || '', cartao:base.cartao || '', pag:base.pag, dia:+t.data.slice(8), inicio, fim:'', ativo:true, skip:keep.filter(x => x.data >= inicio).map(x => ym(x.data)), div: base.div ? {pessoa:base.div.pessoa, pct:base.div.pct} : null};
+  const keepUpd = keep.map(x => ({...x, rec:r.id}));
+  delMany(drop.map(x => x.id)); putMany([r, ...keepUpd, ...recBuild(r, false)]); toast('Agora é um fixo sem data para acabar');
+}
+function formRec(r){
+  const ondeR = r.cartao ? 'k:' + r.cartao : r.conta ? 'c:' + r.conta : '';
+  const s = settings(), cats = [...new Set([...(s.catsOut || DEF_OUT), ...(s.catsIn || DEF_IN), r.cat])];
+  const fields = [
+    {k:'tipo', label:'Tipo', type:'select', options:[['saida','Gasto fixo'],['entrada','Receita fixa']]}, {k:'valor', label:'Valor por mês (R$)', type:'number'},
+    {k:'desc', label:'Descrição', full:true}, {k:'cat', label:'Categoria', type:'select', options:cats},
+    {k:'onde', label:'Conta ou cartão', type:'select', options:ondeOpts()}, {k:'dia', label:'Dia do mês', type:'number'},
+    {k:'inicio', label:'Desde', type:'date'}, {k:'fim', label:'Até (opcional)', type:'date', hint:'Em branco: sem data para acabar'},
+    {k:'ativo', label:'Ativo', type:'check'},
+  ];
+  openSheet({title:'Editar fixo', fields, data:{...r, onde:ondeR, ativo:r.ativo !== false},
+    extra:'<p class="note">As mudanças valem deste mês em diante. O que já foi pago continua como está.</p>',
+    deleteLabel:'Apagar fixo', onDelete: () => { const ids = TX().filter(x => x.rec === r.id && x.data >= today().slice(0, 8) + '01' && !(x.pago && !x.cartao && x.data < today())).map(x => x.id); delMany([r.id, ...ids]); },
+    onSave: v => {
+      if (!(v.valor > 0)) return 'Informe o valor.'; if (!(v.dia >= 1 && v.dia <= 31)) return 'O dia precisa ser entre 1 e 31.';
+      if (v.fim && v.fim < v.inicio) return 'A data final precisa ser depois do início.';
+      const onde = String(v.onde || ''), r2 = {...r, tipo:v.tipo, valor:CALC.r2(v.valor), desc:v.desc, cat:v.cat, conta: onde.startsWith('c:') ? onde.slice(2) : '', cartao: onde.startsWith('k:') ? onde.slice(2) : '', dia:Math.round(v.dia), inicio:v.inicio, fim:v.fim || '', ativo:!!v.ativo};
+      if (!r2.ativo || r2.fim){ const lim = r2.ativo ? r2.fim : today(); const ids = TX().filter(x => x.rec === r.id && x.data > lim && !(x.pago && !x.cartao && x.data < today())).map(x => x.id); delMany(ids); }
+      putMany([r2, ...(r2.ativo ? recFuture(r2, today().slice(0, 8) + '01') : [])]);
+    }});
+}
+function recSection(){
+  const rs = all('rec').sort((a, b) => (a.ativo === false) - (b.ativo === false) || a.tipo.localeCompare(b.tipo) || b.valor - a.valor);
+  const at = rs.filter(r => r.ativo !== false && (!r.fim || r.fim >= today())), rec = at.filter(r => r.tipo === 'entrada').reduce((a, r) => a + r.valor, 0), gas = at.filter(r => r.tipo === 'saida').reduce((a, r) => a + r.valor, 0);
+  return `<div class="stats3"><div class="card stat"><span class="label">Receitas fixas</span><b class="pos">${brl0(rec)}</b><small>por mês</small></div><div class="card stat"><span class="label">Gastos fixos</span><b>${brl0(gas)}</b><small>por mês</small></div><div class="card stat"><span class="label">Sobra fixa</span><b class="${rec - gas < 0 ? 'neg' : ''}">${brl0(rec - gas)}</b><small>antes do dia a dia</small></div></div>
+    <section class="card"><div class="card-head"><h3>Fixos cadastrados</h3><button class="link" data-act="add-fixo">${ic('plus')}Fixo</button></div>
+      ${rs.length ? `<div class="list">${rs.map(r => { const off = r.ativo === false || (r.fim && r.fim < today()); return `<div class="item" role="button" tabindex="0" data-rec="${r.id}" style="${off ? 'opacity:.55' : ''}">${catTile(r.cat)}<div class="main"><div class="t">${esc(r.desc)}${off ? '<span class="chip">encerrado</span>' : ''}${r.ex ? '<span class="chip ex">exemplo</span>' : ''}</div><div class="m">todo dia ${r.dia} · ${esc(r.cartao ? (get(r.cartao)?.nome || 'Cartão') : get(r.conta)?.nome || 'sem conta')}${r.fim ? ' · até ' + fmtD(r.fim) : ''}</div></div><div class="amt ${r.tipo === 'entrada' ? 'pos' : ''}">${r.tipo === 'entrada' ? '+ ' : '− '}${brl(r.valor)}</div></div>`; }).join('')}</div>`
+        : emptyBox('repeat','green','Salário, aluguel, plano de celular, sócio-torcedor, streaming: cadastre uma vez e a Caderneta lança todo mês, sem data para acabar. No cartão, os meses futuros não ocupam o limite.', '<button class="btn pri sm" data-act="add-fixo">Cadastrar fixo</button>')}
+    </section>`;
+}
+
 /* ===================== RENDER + EVENTOS ===================== */
 function render(){
   renderChrome();
@@ -3992,6 +4116,7 @@ function render(){
     else { const btn = had.querySelector('button[type=submit]'); const wait = Math.max(0, Math.ceil((LOCKUI.until - Date.now())/1000)); if (btn && !btn.textContent.includes('…')) btn.disabled = !!wait; const er = $('#lk-err'); if (er && wait) er.textContent = `Muitas tentativas. Aguarde ${wait} s.`; }
     $('#fab').hidden = true; return;
   }
+  if (S.key && REC_DAY !== today()){ REC_DAY = today(); setTimeout(ensureRec, 400); }
   const act = document.activeElement, actId = act?.id, selStart = act?.selectionStart;
   $('#view').innerHTML = {inicio:vInicio, dinheiro:vDinheiro, planejar:vPlanejar, patrimonio:vPatrimonio, pontos:vPontos, viagens:vViagens}[UI.tab]();
   if (document.getElementById('tripmap')) drawMap();
@@ -4013,7 +4138,7 @@ function fabAction(){
 $('#fab').addEventListener('click', fabAction);
 document.addEventListener('click', async e => {
   if (e.target.closest('a[href]')) return;
-  const el = e.target.closest('[data-tab],[data-goto],[data-act],[data-edit],[data-din],[data-pat],[data-trip],[data-close],[data-chkdel],[data-horiz],[data-payfat],[data-fat],[data-settle],[data-aporte],[data-paydiv],[data-mil],[data-ttab],[data-pend],[data-clube],[data-vrec],[data-addday],[data-impall],[data-vtab],[data-orc],[data-cen],[data-oitchk],[data-wprice],[data-credit],[data-camptr],[data-plan],[data-calday],[data-fh],[data-flx],[data-divrec],[data-divall],[data-divtrip],[data-vcs],[data-acerto],[data-acdel],[data-chkmodel],[data-cpflim],[data-ruledel],[data-irano]');
+  const el = e.target.closest('[data-tab],[data-goto],[data-act],[data-edit],[data-din],[data-pat],[data-trip],[data-close],[data-chkdel],[data-horiz],[data-payfat],[data-fat],[data-settle],[data-aporte],[data-paydiv],[data-mil],[data-ttab],[data-pend],[data-clube],[data-vrec],[data-addday],[data-impall],[data-vtab],[data-orc],[data-cen],[data-oitchk],[data-wprice],[data-credit],[data-camptr],[data-plan],[data-calday],[data-fh],[data-flx],[data-divrec],[data-divall],[data-divtrip],[data-vcs],[data-acerto],[data-acdel],[data-chkmodel],[data-cpflim],[data-ruledel],[data-irano],[data-rec],[data-mkrec]');
   if (!el) return;
   if (el.dataset.close !== undefined){ if (e.target === el || el.tagName === 'BUTTON') closeSheet(); return; }
   if (el.dataset.tab){ UI.tab = el.dataset.tab; if (UI.tab !== 'viagens'){ UI.tripId = null; UI.orcId = null; } render(); scrollTo(0,0); return; }
@@ -4029,6 +4154,8 @@ document.addEventListener('click', async e => {
   if (el.dataset.cpflim){ const p = get(el.dataset.cpflim); if (p) formCpfLim(p); return; }
   if (el.dataset.ruledel){ del(el.dataset.ruledel); setTimeout(formRules, 50); return; }
   if (el.dataset.irano){ UI.irAno = +el.dataset.irano; render(); return; }
+  if (el.dataset.rec){ const r = get(el.dataset.rec); if (r) formRec(r); return; }
+  if (el.dataset.mkrec){ const tx = get(el.dataset.mkrec); if (!tx) return; if (tx.grupo && tx.parc === 'fixo') return fixoToRec(tx); const r = {id:uid('rec'), kind:'rec', tipo:tx.tipo, valor:CALC.r2(tx.valor), desc:tx.desc || tx.cat, cat:tx.cat, conta:tx.conta || '', cartao:tx.cartao || '', pag:tx.pag, dia:+tx.data.slice(8), inicio:addMonths(tx.data, 1), fim:'', ativo:true, skip:[]}; putMany([r, ...recBuild(r, false)]); toast('Virou fixo: lança todo mês a partir do próximo'); return; }
   if (el.dataset.divrec){ const x = divItems().find(i => i.id === el.dataset.divrec); if (x) formDivRec([x]); return; }
   if (el.dataset.divall){ return formDivRec(divPending().filter(i => norm(i.pessoa) === el.dataset.divall)); }
   if (el.dataset.divtrip){ const c = get(el.dataset.divtrip); if (c){ UI.tab = 'viagens'; UI.tripId = c.trip; UI.ttab = 'gastos'; render(); formTcost(c); } return; }
@@ -4084,6 +4211,10 @@ document.addEventListener('click', async e => {
   if (a === 'trip-pdf'){ const tr = get(UI.tripId); if (tr) printDoc(tripHtml(tr)); return; }
   if (a === 'trip-dl'){ const tr = get(UI.tripId); if (tr) downloadDoc(`roteiro-${norm(tr.destino).replace(/[^a-z0-9]+/g, '-').slice(0, 40)}.html`, `Roteiro ${tr.destino}`, tripHtml(tr)); return; }
   if (a === 'ir-print'){ const ano = UI.irAno || new Date().getFullYear() - 1; printDoc(irHtml(ano)); return; }
+  if (a === 'add-fixo'){ formTx(); setTimeout(() => { const c = $('#f-fixo'); if (c){ c.checked = true; c.dispatchEvent(new Event('change', {bubbles:true})); } }, 0); return; }
+  if (a === 'rec-skip'){ const t = get(UI.txEdit); closeSheet(); if (t) recSkip(t); return; }
+  if (a === 'rec-edit'){ const t = get(UI.txEdit), r = t && get(t.rec); closeSheet(); if (r) formRec(r); return; }
+  if (a === 'fixo-to-rec'){ const t = get(UI.txEdit); closeSheet(); if (t) fixoToRec(t); return; }
   if (a === 'pin-usepass'){ LOCKUI.usePass = true; render(); return; }
   if (a === 'pin'){ closeSheet(); return formPin(); }
   if (a === 'xlsx'){ closeSheet(); return exportXlsx(); }
