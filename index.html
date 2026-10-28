@@ -1184,6 +1184,7 @@ function formTx(t, opts = {}){
     ...(isNew ? [
       {k:'fixo', label:'Repete todo mês (salário, aluguel, assinatura, plano de celular)', type:'check'},
       {k:'recFim', label:'Até quando (opcional)', type:'date', hint:'Em branco: todo mês, sem data para acabar'},
+      {k:'recAuto', label:'Dar baixa sozinho na data (débito automático ou salário que sempre cai)', type:'check'},
       {k:'parcelas', label:'Nº de parcelas', type:'number', def:1, hint:'No cartão, cada parcela cai numa fatura'},
       {k:'vmodo', label:'O valor informado é', type:'select', options:[['total','O total da compra'],['parcela','O valor de cada parcela']]},
       {k:'parcIni', label:'Parcela que cai agora', type:'number', def:1, hint:'Compra antiga? Ex.: 4 se esta é a 4ª de 10'},
@@ -1193,7 +1194,7 @@ function formTx(t, opts = {}){
     {k:'obs', label:'Observações', full:true},
   ];
   const data = {...t, onde:defOnde, ...divData(t)};
-  const extra = (recT ? `<div class="callout" style="margin-top:10px">${ic('repeat')} Lançamento fixo: repete todo dia ${recT.dia}${recT.fim ? ' até ' + fmtD(recT.fim) : ', sem data para acabar'}.<div class="actions" style="margin-top:8px"><button class="btn sm" data-act="rec-skip">Apagar só este mês</button><button class="btn sm" data-act="rec-edit">Editar o fixo</button></div></div>`
+  const extra = (recT ? `<div class="callout" style="margin-top:10px">${ic('repeat')} Lançamento fixo: repete todo dia ${recT.dia}${recT.fim ? ' até ' + fmtD(recT.fim) : ', sem data para acabar'}${recT.auto ? ', com baixa automática' : ''}. Fica lançado 24 meses à frente e renova sozinho a cada mês.<div class="actions" style="margin-top:8px"><button class="btn sm" data-act="rec-skip">Apagar só este mês</button><button class="btn sm" data-act="rec-edit">Editar o fixo</button></div></div>`
     : !isNew && t.grupo && t.parc === 'fixo' ? `<div class="callout" style="margin-top:10px">Este lançamento foi repetido por 12 meses.<div class="actions" style="margin-top:8px"><button class="btn sm pri" data-act="fixo-to-rec">${ic('repeat')}Transformar em fixo sem data para acabar</button></div></div>`
     : !isNew && t.grupo ? `<div class="note" style="margin-top:8px">Este lançamento faz parte de um grupo (${esc(t.parc||'')}).</div>` : '') + '<div id="tx-prev" class="callout" style="margin-top:10px" hidden></div>';
   if (recT || (t.grupo && t.parc === 'fixo')) UI.txEdit = t.id;
@@ -1204,7 +1205,8 @@ function formTx(t, opts = {}){
       const tr = v.tipo === 'transf', card = String(v.onde).startsWith('k:'), n = Math.max(1, Math.floor(+v.parcelas || 1)), parc = isNew && v.tipo === 'saida' && n > 1 && !v.fixo;
       showF('contaDest', tr); showF('cat', !tr); showF('pag', !tr && !card); showF('pago', !card); divInput(v, v.valor, v.tipo === 'saida');
       if (isNew){
-        showF('fixo', !tr && !(n > 1)); showF('recFim', !tr && !!v.fixo && !(n > 1));
+        showF('fixo', !tr && !(n > 1)); showF('recFim', !tr && !!v.fixo && !(n > 1)); showF('recAuto', !tr && !!v.fixo && !card && !(n > 1));
+        { const ra = $('#f-recAuto'); if (ra && v.pag === 'Débito automático' && SHEET.lastPag !== v.pag){ ra.checked = true; v.recAuto = true; } SHEET.lastPag = v.pag; }
         showF('parcelas', !tr && v.tipo === 'saida' && !v.fixo); showF('vmodo', parc); showF('parcIni', parc);
       }
       const vh = document.querySelector('#w-valor .hint'); if (vh) vh.textContent = parc ? (v.vmodo === 'parcela' ? 'Valor de cada parcela' : 'Valor total da compra') : v.fixo ? 'Valor de cada mês' : '';
@@ -1216,7 +1218,7 @@ function formTx(t, opts = {}){
           txt = `<b>${n}× de ${brl(vp)}</b> = ${brl(tot)} no total.${ini > 1 ? `<br>Lança da ${ini}ª à ${n}ª parcela: <b>${rest} parcela(s)</b>, ${brl(vp * rest)} a pagar.` : ''}${card ? `<br>A primeira ${ini > 1 ? 'lançada ' : ''}cai na fatura de ${monthShort(CALC.faturaOf(get(String(v.onde).slice(2)), v.data || today()).key)}.` : ''}`;
         } else if (isNew && v.fixo && +v.valor > 0){
           const d = +String(v.data || today()).slice(8);
-          txt = `${v.tipo === 'entrada' ? 'Receita' : 'Gasto'} de <b>${brl(v.valor)}</b> todo dia ${d}${v.recFim ? ` até ${fmtD(v.recFim)}` : ', sem data para acabar'}.${card ? '<br>No cartão, os meses seguintes entram na fatura de cada mês, mas <b>não ocupam o limite</b> antes da cobrança.' : '<br>Os próximos meses ficam como previstos até você marcar “Paguei/Recebi”.'}`;
+          txt = `${v.tipo === 'entrada' ? 'Receita' : 'Gasto'} de <b>${brl(v.valor)}</b> todo dia ${d}${v.recFim ? ` até ${fmtD(v.recFim)}` : ', sem data para acabar'}.${card ? '<br>No cartão, os meses seguintes entram na fatura de cada mês, mas <b>não ocupam o limite</b> antes da cobrança.' : v.recAuto ? '<br>Na data de cada mês, ele já entra como <b>pago/recebido</b> sozinho.' : '<br>Os próximos meses ficam como previstos até você marcar “Paguei/Recebi”.'}<br>Ficam lançados 24 meses à frente, e a cada mês a Caderneta acrescenta o seguinte sozinha.`;
         }
         pv.hidden = !txt; pv.innerHTML = txt;
       }
@@ -1247,9 +1249,9 @@ function formTx(t, opts = {}){
       }
       if (v.fixo){
         if (v.recFim && v.recFim < v.data) return 'A data final precisa ser depois da primeira.';
-        const r = {id:uid('rec'), kind:'rec', tipo:v.tipo, valor:CALC.r2(v.valor), desc:v.desc || v.cat, cat:v.cat, conta, cartao:cartaoId, pag:base.pag, dia:+v.data.slice(8), inicio:v.data, fim:v.recFim || '', ativo:true, skip:[], div: v.dividir && v.divPessoa ? {pessoa:v.divPessoa, pct:+v.divPct || 50} : null};
+        const r = {id:uid('rec'), kind:'rec', tipo:v.tipo, valor:CALC.r2(v.valor), desc:v.desc || v.cat, cat:v.cat, conta, cartao:cartaoId, pag:base.pag, dia:+v.data.slice(8), inicio:v.data, fim:v.recFim || '', ativo:true, skip:[], auto: !!v.recAuto && !card, div: v.dividir && v.divPessoa ? {pessoa:v.divPessoa, pct:+v.divPct || 50} : null};
         const occ = recBuild(r, v.pago);
-        putMany([r, ...occ]); toast(`Fixo criado: ${occ.length} mês(es) já lançados, e continua sozinho`); if (opts.after) opts.after(); return;
+        putMany([r, ...occ]); toast(`Fixo criado até ${monthShort(ym(occ[occ.length - 1]?.data || v.data))}; renova sozinho todo mês`); if (opts.after) opts.after(); return;
       }
       const n = Math.max(1, Math.floor(+v.parcelas||1)), list = [], grupo = uid('g');
       if (n > 1 && v.tipo === 'saida'){
@@ -4019,8 +4021,8 @@ function vInsights(){
 
 /* ===================== v9: LANÇAMENTOS FIXOS (RECORRÊNCIA) ===================== */
 // Cada fixo é um modelo ("rec"). Os meses são lançados com id previsível (rx_<rec>_<AAAA-MM>), então
-// dois aparelhos geram o mesmo lançamento sem duplicar. Sempre há 12 meses à frente; a cada dia o app completa.
-const REC_AHEAD = 12;
+// dois aparelhos geram o mesmo lançamento sem duplicar. Sempre há 24 meses à frente; a cada dia o app completa e dá baixa nos automáticos.
+const REC_AHEAD = 24;
 let REC_DAY = '';
 const recTxId = (r, m) => `rx_${r.id}_${m}`;
 function recOcc(r, m, pago){
@@ -4037,7 +4039,7 @@ function recMonths(r){
   return out;
 }
 // Lançamentos novos de um fixo recém-criado (o primeiro mês respeita "já pago").
-function recBuild(r, pagoPrimeiro){ return recMonths(r).map((m, i) => recOcc(r, m, i === 0 ? pagoPrimeiro : false)).filter(o => o.data >= (r.inicio || '') && (!r.fim || o.data <= r.fim)); }
+function recBuild(r, pagoPrimeiro){ const t = today(); return recMonths(r).map((m, i) => { const o = recOcc(r, m, i === 0 ? pagoPrimeiro : false); if (r.auto && !o.cartao && o.data <= t) o.pago = true; return o; }).filter(o => o.data >= (r.inicio || '') && (!r.fim || o.data <= r.fim)); }
 // Atualiza os meses a partir de "desde" com os dados novos do fixo, preservando id e "pago".
 function recFuture(r, desde){
   const t = today(), out = [];
@@ -4055,7 +4057,8 @@ async function ensureRec(){
   const list = [];
   for (const r of all('rec')){
     if (r.ativo === false) continue;
-    for (const m of recMonths(r)){ const id = recTxId(r, m); if (S.items.has(id) || S.dels.has(id)) continue; const o = recOcc(r, m, false); if (o.data < (r.inicio || '') || (r.fim && o.data > r.fim)) continue; list.push(o); }
+    for (const m of recMonths(r)){ const id = recTxId(r, m); if (S.items.has(id) || S.dels.has(id)) continue; const o = recOcc(r, m, false); if (o.data < (r.inicio || '') || (r.fim && o.data > r.fim)) continue; if (r.auto && !o.cartao && o.data <= today()) o.pago = true; list.push(o); }
+    if (r.auto && !r.cartao) for (const x of TX()) if (x.rec === r.id && !x.pago && !x.cartao && x.data <= today()) list.push({...x, pago:true});
   }
   if (list.length) await putMany(list);
 }
@@ -4082,17 +4085,18 @@ function formRec(r){
     {k:'desc', label:'Descrição', full:true}, {k:'cat', label:'Categoria', type:'select', options:cats},
     {k:'onde', label:'Conta ou cartão', type:'select', options:ondeOpts()}, {k:'dia', label:'Dia do mês', type:'number'},
     {k:'inicio', label:'Desde', type:'date'}, {k:'fim', label:'Até (opcional)', type:'date', hint:'Em branco: sem data para acabar'},
+    {k:'auto', label:'Dar baixa sozinho na data (débito automático ou salário que sempre cai)', type:'check'},
     {k:'ativo', label:'Ativo', type:'check'},
   ];
   openSheet({title:'Editar fixo', fields, data:{...r, onde:ondeR, ativo:r.ativo !== false},
-    extra:'<p class="note">As mudanças valem deste mês em diante. O que já foi pago continua como está.</p>',
+    extra:`<p class="note">As mudanças valem deste mês em diante. O que já foi pago continua como está. A Caderneta mantém sempre 24 meses lançados à frente e acrescenta o mês seguinte sozinha a cada virada de mês: o fixo nunca acaba, a não ser que você defina uma data.</p>`,
     deleteLabel:'Apagar fixo', onDelete: () => { const ids = TX().filter(x => x.rec === r.id && x.data >= today().slice(0, 8) + '01' && !(x.pago && !x.cartao && x.data < today())).map(x => x.id); delMany([r.id, ...ids]); },
     onSave: v => {
       if (!(v.valor > 0)) return 'Informe o valor.'; if (!(v.dia >= 1 && v.dia <= 31)) return 'O dia precisa ser entre 1 e 31.';
       if (v.fim && v.fim < v.inicio) return 'A data final precisa ser depois do início.';
-      const onde = String(v.onde || ''), r2 = {...r, tipo:v.tipo, valor:CALC.r2(v.valor), desc:v.desc, cat:v.cat, conta: onde.startsWith('c:') ? onde.slice(2) : '', cartao: onde.startsWith('k:') ? onde.slice(2) : '', dia:Math.round(v.dia), inicio:v.inicio, fim:v.fim || '', ativo:!!v.ativo};
+      const onde = String(v.onde || ''), r2 = {...r, tipo:v.tipo, valor:CALC.r2(v.valor), desc:v.desc, cat:v.cat, conta: onde.startsWith('c:') ? onde.slice(2) : '', cartao: onde.startsWith('k:') ? onde.slice(2) : '', dia:Math.round(v.dia), inicio:v.inicio, fim:v.fim || '', ativo:!!v.ativo, auto: !!v.auto && !onde.startsWith('k:')};
       if (!r2.ativo || r2.fim){ const lim = r2.ativo ? r2.fim : today(); const ids = TX().filter(x => x.rec === r.id && x.data > lim && !(x.pago && !x.cartao && x.data < today())).map(x => x.id); delMany(ids); }
-      putMany([r2, ...(r2.ativo ? recFuture(r2, today().slice(0, 8) + '01') : [])]);
+      putMany([r2, ...(r2.ativo ? recFuture(r2, today().slice(0, 8) + '01') : [])]).then(() => ensureRec());
     }});
 }
 function recSection(){
@@ -4100,8 +4104,9 @@ function recSection(){
   const at = rs.filter(r => r.ativo !== false && (!r.fim || r.fim >= today())), rec = at.filter(r => r.tipo === 'entrada').reduce((a, r) => a + r.valor, 0), gas = at.filter(r => r.tipo === 'saida').reduce((a, r) => a + r.valor, 0);
   return `<div class="stats3"><div class="card stat"><span class="label">Receitas fixas</span><b class="pos">${brl0(rec)}</b><small>por mês</small></div><div class="card stat"><span class="label">Gastos fixos</span><b>${brl0(gas)}</b><small>por mês</small></div><div class="card stat"><span class="label">Sobra fixa</span><b class="${rec - gas < 0 ? 'neg' : ''}">${brl0(rec - gas)}</b><small>antes do dia a dia</small></div></div>
     <section class="card"><div class="card-head"><h3>Fixos cadastrados</h3><button class="link" data-act="add-fixo">${ic('plus')}Fixo</button></div>
-      ${rs.length ? `<div class="list">${rs.map(r => { const off = r.ativo === false || (r.fim && r.fim < today()); return `<div class="item" role="button" tabindex="0" data-rec="${r.id}" style="${off ? 'opacity:.55' : ''}">${catTile(r.cat)}<div class="main"><div class="t">${esc(r.desc)}${off ? '<span class="chip">encerrado</span>' : ''}${r.ex ? '<span class="chip ex">exemplo</span>' : ''}</div><div class="m">todo dia ${r.dia} · ${esc(r.cartao ? (get(r.cartao)?.nome || 'Cartão') : get(r.conta)?.nome || 'sem conta')}${r.fim ? ' · até ' + fmtD(r.fim) : ''}</div></div><div class="amt ${r.tipo === 'entrada' ? 'pos' : ''}">${r.tipo === 'entrada' ? '+ ' : '− '}${brl(r.valor)}</div></div>`; }).join('')}</div>`
+      ${rs.length ? `<div class="list">${rs.map(r => { const off = r.ativo === false || (r.fim && r.fim < today()); return `<div class="item" role="button" tabindex="0" data-rec="${r.id}" style="${off ? 'opacity:.55' : ''}">${catTile(r.cat)}<div class="main"><div class="t">${esc(r.desc)}${off ? '<span class="chip">encerrado</span>' : ''}${r.ex ? '<span class="chip ex">exemplo</span>' : ''}</div><div class="m">todo dia ${r.dia}${r.auto ? ' · baixa automática' : ''} · ${esc(r.cartao ? (get(r.cartao)?.nome || 'Cartão') : get(r.conta)?.nome || 'sem conta')}${r.fim ? ' · até ' + fmtD(r.fim) : ' · sem fim'}</div></div><div class="amt ${r.tipo === 'entrada' ? 'pos' : ''}">${r.tipo === 'entrada' ? '+ ' : '− '}${brl(r.valor)}</div></div>`; }).join('')}</div>`
         : emptyBox('repeat','green','Salário, aluguel, plano de celular, sócio-torcedor, streaming: cadastre uma vez e a Caderneta lança todo mês, sem data para acabar. No cartão, os meses futuros não ocupam o limite.', '<button class="btn pri sm" data-act="add-fixo">Cadastrar fixo</button>')}
+      ${rs.length ? `<p class="foot">Os fixos ficam lançados sempre 24 meses à frente (hoje, até ${monthShort(mAdd(ym(today()), REC_AHEAD - 1))}). A cada virada de mês a Caderneta acrescenta o mês seguinte sozinha, então eles nunca acabam, a não ser que você defina uma data final.</p>` : ''}
     </section>`;
 }
 
