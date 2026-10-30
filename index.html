@@ -266,7 +266,7 @@ table.mini td:last-child{white-space:nowrap;text-align:right;padding-left:12px;f
 .lockwrap .btn.pri{height:50px;font-size:16px;border-radius:14px;margin-top:4px}
 
 body.hidev .big,body.hidev .v,body.hidev .amt,body.hidev .money,body.hidev .hero-stats b,body.hidev .flow-row b,body.hidev .stat b,body.hidev .cc-val,body.hidev table.mini td:last-child{filter:blur(10px);user-select:none}
-@media (max-width:440px){.stats3{gap:8px}.stat{padding:10px 10px}.stat b{font-size:15px;white-space:normal;overflow:visible;overflow-wrap:anywhere;line-height:1.2}.stat .label{font-size:12px}.hero-stats b{font-size:14.5px}}
+@media (max-width:440px){.hide-xs{display:none}.stats3{gap:8px}.stat{padding:10px 10px}.stat b{font-size:15px;white-space:normal;overflow:visible;overflow-wrap:anywhere;line-height:1.2}.stat .label{font-size:12px}.hero-stats b{font-size:14.5px}}
 @media (max-width:420px){.form{grid-template-columns:minmax(0,1fr)}.big{font-size:36px}.pagehead h1{font-size:30px}.kpi .v{font-size:21px}}
 @media (prefers-reduced-motion:no-preference){.sheet{animation:up .22s cubic-bezier(.2,.8,.2,1)}@keyframes up{from{transform:translateY(30px);opacity:.5}}}
 
@@ -362,10 +362,25 @@ const CALC = (() => {
     const P = +inv.aplicado || 0;
     const real = +inv.saldoReal || +inv.atual || 0;
     const dias = Math.max(0, days(inv.inicio, at));
+    const q = +inv.qtd || 0, pa = +inv.precoAtual || 0, fee = (+inv.taxaAdm || 0) / 100;
+    const feeF = fee > 0 && inv.idx !== 'manual' && !(q && pa) ? Math.pow(1 - fee, dias / 365) : 1;
+    // Investimento no exterior: calcula na moeda e converte pela cotação dos Ajustes. IR de 15% sobre o ganho em reais (Lei 14.754/2023).
+    if (inv.moeda && inv.moeda !== 'BRL'){
+      const fxr = +((s.cot || {})[inv.moeda]) || 0, Pm = +inv.aplicadoMoeda || (fxr ? P / fxr : 0);
+      let bm;
+      if (q && pa) bm = q * pa;
+      else if (inv.idx === 'manual') bm = real || Pm;
+      else if (real && inv.dataSaldo && days(inv.dataSaldo, at) >= 0) bm = real * factor(inv, days(inv.dataSaldo, at), s);
+      else bm = Pm * factor(inv, dias, s);
+      bm *= feeF; const bruto = bm * fxr, rend = bruto - P, ir = rend > 0 ? rend * .15 : 0;
+      return { bruto, rend, iof:0, ir, liq: bruto - ir, dias, bm, fxr };
+    }
     let bruto;
-    if (inv.idx === 'manual') bruto = real || P;
+    if (q && pa) bruto = q * pa;
+    else if (inv.idx === 'manual') bruto = real || P;
     else if (real && inv.dataSaldo && days(inv.dataSaldo, at) >= 0) bruto = real * factor(inv, days(inv.dataSaldo, at), s);
     else bruto = P * factor(inv, dias, s);
+    bruto *= feeF;
     const rend = bruto - P;
     if (inv.idx === 'manual' || rend <= 0) return { bruto, rend, iof:0, ir:0, liq:bruto, dias };
     const iof = rend * iofRate(dias);
@@ -461,9 +476,9 @@ const FIN = {
   compromissos(txs, cards, hoje, ate){
     const receber = [], pagar = [];
     for (const t of txs){
-      if (t.pago || t.cartao || !(t.tipo === 'entrada' || t.tipo === 'saida')) continue;
+      if (t.pago || t.cartao || !(t.tipo === 'entrada' || t.tipo === 'saida' || (t.tipo === 'transf' && t.invMov))) continue;
       if (t.data > ate) continue;
-      (t.tipo === 'entrada' ? receber : pagar).push({tipo:'tx', t, data:t.data, valor:+t.valor});
+      (t.tipo === 'entrada' || t.invMov === 'resgate' ? receber : pagar).push({tipo:'tx', t, data:t.data, valor:+t.valor});
     }
     for (const c of cards){
       for (const f of FIN.faturasDoCartao(c, txs)){
@@ -518,7 +533,8 @@ const INV_TYPES = {
   'CDB':{idx:'cdi',isento:false}, 'LCI':{idx:'cdi',isento:true}, 'LCA':{idx:'cdi',isento:true},
   'CRI/CRA':{idx:'ipca',isento:true}, 'Tesouro Selic':{idx:'selic',isento:false}, 'Tesouro IPCA+':{idx:'ipca',isento:false},
   'Tesouro Prefixado':{idx:'pre',isento:false}, 'Debênture':{idx:'ipca',isento:false}, 'Poupança':{idx:'poup',isento:true},
-  'Fundo/Ações/FII':{idx:'manual',isento:false}, 'Previdência':{idx:'manual',isento:false}, 'Cripto':{idx:'manual',isento:false}
+  'Fundo/Ações/FII':{idx:'manual',isento:false}, 'Previdência':{idx:'manual',isento:false}, 'Cripto':{idx:'manual',isento:false},
+  'Ações/ETF no exterior':{idx:'manual',isento:false,moeda:'USD'}, 'Renda fixa no exterior':{idx:'pre',isento:false,moeda:'USD'}, 'Conta em dólar/euro':{idx:'manual',isento:false,moeda:'USD'}
 };
 const FGC_TYPES = ['CDB','LCI','LCA','Poupança'];
 const IDX_LABEL = {cdi:'% do CDI', selic:'Selic + % a.a.', pre:'Prefixado % a.a.', ipca:'IPCA + % a.a.', poup:'Poupança', manual:'Valor atual informado'};
@@ -565,7 +581,8 @@ async function writeRaw(rec){
   else saveLocal();
 }
 async function sealItem(item){ const c = await CRYPTO.enc(S.key, item); S.cache.set(c.ct, item); return {id:item.id, kind:'enc', iv:c.iv, ct:c.ct, u:+item.upd || 0}; }
-async function storeItems(list){
+async function storeItems(list, opt = {}){
+  if (!opt.nolog && typeof logEntries === 'function'){ const lg = logEntries(list); if (lg.length) list = [...list, {id:'auditlog', kind:'auditlog', itens:[...lg, ...(S.items.get('auditlog')?.itens || [])].slice(0, 300), upd:Date.now()}]; }
   for (const it of list){ if (it.kind === 'del'){ S.items.delete(it.id); S.dels.set(it.id, it); } else { S.dels.delete(it.id); S.items.set(it.id, it); } }
   render();
   for (const it of list) await writeRaw(await sealItem(it));
@@ -588,7 +605,7 @@ async function openAll(){
 }
 const all = kind => [...S.items.values()].filter(i => i.kind === kind);
 const get = id => S.items.get(id);
-const settings = () => ({ cdi:14.15, ipca:4.8, catsOut:DEF_OUT, catsIn:DEF_IN, ...(get('settings') || {}) });
+const settings = () => ({ cdi:14.15, ipca:4.8, cot:{USD:5.5, EUR:6.2}, catsOut:DEF_OUT, catsIn:DEF_IN, ...(get('settings') || {}) });
 
 async function initStore(){
   if (!IN_CLAUDE) await fbLoadCfg();
@@ -631,7 +648,7 @@ async function initStore(){
 /* ===================== BLOQUEIO ===================== */
 const LOCKUI = { fails: +(lsGet('caderneta.fails')||0), until: +(lsGet('caderneta.until')||0), lastActive: Date.now(), hiddenAt: 0 };
 const IDLE_MS = 5*60*1000, AWAY_MS = 60*1000;
-function lockNow(){ LOCKUI.usePass = false; if (typeof REC_DAY !== 'undefined') REC_DAY = ''; S.key = null; S.dkRaw = null; if (typeof FB !== 'undefined'){ FB.sess = null; FB.idTok = ''; } S.items = new Map(); S.dels = new Map(); S.cache = new Map(); closeSheet(); render(); }
+function lockNow(){ LOCKUI.usePass = false; REC_DAY = ''; SNAP_DAY = ''; S.key = null; S.dkRaw = null; if (typeof FB !== 'undefined'){ FB.sess = null; FB.idTok = ''; } S.items = new Map(); S.dels = new Map(); S.cache = new Map(); closeSheet(); render(); }
 // A chave dos dados (DK) é aleatória; a senha só a protege. Assim dá para trocar ou redefinir a senha sem recriptografar tudo.
 async function createLock(user, pass, dkRaw){
   if (!S.key){ S.key = await importDK(crypto.getRandomValues(new Uint8Array(32))); await openAll(); S.key = null; }
@@ -815,7 +832,7 @@ const TX = () => all('tx');
 const monthTx = m => TX().filter(t => ym(t.data) === m);
 const monthTotals = m => FIN.monthTotals(TX(), m);
 const progBalance = pid => all('pmov').filter(m => m.prog === pid && !isPend(m)).reduce((s,m)=>s+(+m.qtd),0);
-function invSummary(){ const s = settings(), t = today(); let ap = 0, lq = 0, br = 0; for (const i of all('inv')){ const r = CALC.evaluate(i, s, t); ap += +i.aplicado||0; lq += r.liq; br += r.bruto; } return {ap, lq, br}; }
+function invSummary(){ const s = settings(), t = today(); let ap = 0, lq = 0, br = 0; for (const i of invAtivos()){ const r = CALC.evaluate(i, s, t); ap += +i.aplicado||0; lq += r.liq; br += r.bruto; } return {ap, lq, br}; }
 function contasSaldo(){ const txs = TX(); return all('conta').filter(c => c.ativo !== false).reduce((s,c)=>s+FIN.contaSaldo(c, txs),0); }
 function patrimonio(){
   const txs = TX(), contas = contasSaldo(), inv = invSummary().lq;
@@ -849,6 +866,7 @@ function metaRow(g){
     <div class="t" style="display:flex;justify-content:space-between;gap:8px"><span>${esc(g.nome)}${g.ex ? '<span class="chip ex">exemplo</span>' : ''}</span><span class="money" style="white-space:nowrap">${Math.round(p*100)}%</span></div>
     <div class="bar" style="margin:8px 0 6px"><i style="width:${p*100}%;${p >= 1 ? 'background:var(--pos)' : ''}"></i></div>
     <div class="m"><span class="money">${brl0(g.acumulado)} de ${brl0(g.alvo)}</span> · ${p >= 1 ? 'meta atingida' : `faltam <span class="money">${brl0(falta)}</span>${meses ? ` · ≈ <span class="money">${brl0(falta/meses)}</span>/mês por ${meses} meses` : ''}`}</div>
+    ${(() => { const r = p < 1 ? metaRitmo(g) : null; return r ? `<div class="m">${r.atraso ? `<span class="chip bad" style="margin-left:0">atrasada</span> deveria ter ≈ <span class="money">${brl0(r.esp)}</span> · ` : ''}investindo a 100% do CDI: <span class="money">${brl0(r.comRend)}</span>/mês</div>` : ''; })()}
   </div></div>`;
 }
 function vInicio(){
@@ -859,15 +877,15 @@ function vInicio(){
   const ex = [...S.items.values()].some(x => x.ex);
   const alerts = [];
   for (const p of all('prog')){ for (const l of CALC.lots(all('pmov').filter(x=>x.prog===p.id))){ if (l.venc){ const d = CALC.days(t, l.venc); if (d <= 90) alerts.push({d, html:`<div class="item">${mono(p.nome)}<div class="main"><div class="t">${int(l.resta)} pontos ${esc(p.nome)} expiram</div><div class="m">${fmtD(l.venc)} · use ou transfira antes</div></div><span class="chip ${d<=30?'bad':'warn'}">${d<0?'vencido':d+' dias'}</span></div>`}); } } }
-  for (const i of all('inv')){ if (i.venc){ const d = CALC.days(t, i.venc); if (d >= 0 && d <= 30) alerts.push({d, html:`<div class="item">${tile('clock','blue')}<div class="main"><div class="t">${esc(i.nome)} vence</div><div class="m">${fmtD(i.venc)} · decida onde reinvestir</div></div><span class="chip warn">${d} dias</span></div>`}); } }
+  for (const i of invAtivos()){ if (i.venc){ const d = CALC.days(t, i.venc); if (d >= 0 && d <= 30) alerts.push({d, html:`<div class="item">${tile('clock','blue')}<div class="main"><div class="t">${esc(i.nome)} vence</div><div class="m">${fmtD(i.venc)} · decida onde reinvestir</div></div><span class="chip warn">${d} dias</span></div>`}); } }
   for (const c of all('cartao')){ for (const f of FIN.faturasDoCartao(c, TX())){ if (f.pend > 0 && f.due < t) alerts.push({d:-1, html:`<div class="item" role="button" tabindex="0" data-fat="${c.id}|${f.key}">${tile('card','red')}<div class="main"><div class="t">Fatura ${esc(c.nome)} vencida</div><div class="m">venceu ${fmtD(f.due)} · <span class="money">${brl(f.pend)}</span> pendente</div></div><span class="chip bad">atrasada</span></div>`}); } }
-  clubAlerts(alerts, t); campAlerts(alerts, t); docAlerts(alerts, t);
+  clubAlerts(alerts, t); campAlerts(alerts, t); docAlerts(alerts, t); backupAlert(alerts);
   const metas = all('meta').filter(x=>x.status!=='concluida').sort((a,b)=>(a.prioridade||2)-(b.prioridade||2)).slice(0,3);
   const trips = all('trip').filter(x => x.status !== 'concluida').sort((a,b)=> (a.ida||'') < (b.ida||'') ? -1 : 1), next = trips[0];
   const hr = new Date().getHours(), greet = hr < 5 ? 'Boa noite' : hr < 12 ? 'Bom dia' : hr < 18 ? 'Boa tarde' : 'Boa noite';
   const dl = cap(new Date().toLocaleDateString('pt-BR', {weekday:'long', day:'numeric', month:'long'}));
   const mesNome = monthName(m).split(' ')[0].toLowerCase();
-  return `${head(greet, dl, `<button class="btn sm" data-act="inbox">${ic('receipt')}Ler notificação</button>`)}
+  return `${head(greet, dl, `<div class="row" style="gap:6px"><button class="btn sm" data-act="compra">${ic('cartq')}<span class="hide-xs">Posso comprar?</span></button><button class="btn sm" data-act="inbox">${ic('receipt')}<span class="hide-xs">Ler notificação</span></button></div>`)}
     ${pendCard()}
     ${!hasData ? emptyIntro() : ''}
     ${ex ? `<div class="banner">${ic('sparkle')}<span><b>Dados de exemplo.</b> Os números são ilustrativos.</span><button class="btn sm" data-act="unseed">Apagar</button></div>` : ''}
@@ -883,12 +901,13 @@ function vInicio(){
         </div>
       </section>
       <section class="card">
-        <div class="card-head"><h3>Próximos dias</h3><div class="seg sm">${[7,15,30].map(h=>`<button class="${UI.horiz===h?'on':''}" data-horiz="${h}">${h} dias</button>`).join('')}</div></div>
+        <div class="card-head"><h3>Seu dinheiro</h3><div class="seg sm">${[7,15,30].map(h=>`<button class="${UI.horiz===h?'on':''}" data-horiz="${h}">${h} dias</button>`).join('')}</div></div>
         <div class="flow">
-          <div class="flow-row">${tile('bank','blue')}<span>Saldo real em contas</span><b>${brl(P.contas)}</b></div>
+          <div class="flow-row">${tile('bank','blue')}<span>Saldo real nos bancos <small class="muted">(confirmado)</small></span><b>${brl(P.contas)}</b></div>
           <div class="flow-row">${tile('trend','green')}<span>A receber (previsto)</span><b class="pos">+ ${brl(C.totReceber)}</b></div>
           <div class="flow-row">${tile('calendar','red')}<span>Contas e faturas a pagar</span><b class="neg">− ${brl(C.totPagar)}</b></div>
-          <div class="flow-row total"><span>Saldo estimado em ${fmtD(ate)}</span><b class="${estimado < 0 ? 'neg' : ''}">${brl(estimado)}</b></div>
+          <div class="flow-row total"><span>Livre após compromissos até ${fmtD(ate)}</span><b class="${estimado < 0 ? 'neg' : ''}">${brl(estimado)}</b></div>
+          ${(() => { const S3 = saldos3(); return `<div class="flow-row">${tile('flow','purple')}<span>Previsão para o fim do mês <small class="muted">(estimativa)</small></span><b class="${S3.fimMes < 0 ? 'neg' : ''}">${brl(S3.fimMes)}</b></div>${(() => { const L = liqResumo(); return L.ja > 0 ? `<div class="flow-row" role="button" tabindex="0" data-goto="patrimonio:inv">${tile('trend','teal')}<span>Com resgates de hoje <small class="muted">(contas + ${brl0(L.ja)} em investimentos que saem em até 1 dia)</small></span><b>${brl(P.contas + L.ja)}</b></div>` : ''; })()}<div class="flow-row" role="button" tabindex="0" data-goto="patrimonio:reco">${tile('coins','green')}<span>Pode investir este mês <small class="muted">(livre em 30 dias − ${brl0(S3.colchao)} de gastos do dia a dia)</small></span><b class="pos">${brl(S3.invest)}</b></div>`; })()}
         </div>
         ${C.pagar.length ? `<button class="btn full" data-goto="dinheiro:apagar">Ver ${C.pagar.length} compromisso${C.pagar.length > 1 ? 's' : ''}${ic('chevron')}</button>` : ''}
         <p class="foot">Entradas previstas podem não acontecer. Investimentos não entram no saldo disponível.</p>
@@ -935,15 +954,15 @@ function txRow(t){
   const neutral = t.tipo === 'transf' || t.tipo === 'pagfatura' || t.tipo === 'pagdiv';
   const inc = t.tipo === 'entrada';
   const sign = neutral ? '' : (inc ? '+ ' : '− ');
-  let sub = [t.cat, ondeLabel(t)];
-  if (t.tipo === 'transf') sub = [`${get(t.conta)?.nome||'?'} → ${get(t.contaDest)?.nome||'?'}`];
+  let sub = [t.cat ? t.cat + (t.sub ? ' › ' + t.sub : '') : '', ondeLabel(t)];
+  if (t.tipo === 'transf') sub = [`${get(t.conta)?.nome || (t.invNome ? 'Investimento' : '?')} → ${get(t.contaDest)?.nome || (t.invNome ? 'Investimento' : '?')}`];
   if (t.tipo === 'pagfatura') sub = [`Fatura ${monthShort(t.fatura)}`, get(t.conta)?.nome];
   if (t.tipo === 'pagdiv') sub = [get(t.conta)?.nome];
   if (t.cartao && t.fatura && t.tipo !== 'pagfatura') sub.push('fatura ' + monthShort(t.fatura));
   if (t.parc) sub.push(t.parc === 'fixo' ? 'mensal' : t.parc);
   if (TX_DATE) sub.unshift(fmtD(t.data));
   const title = t.desc || (t.tipo==='transf' ? 'Transferência' : t.tipo==='pagfatura' ? 'Pagamento de fatura' : t.cat);
-  const flags = (!t.pago && !t.cartao && !neutral ? '<span class="chip warn">previsto</span>' : '') + (t.ex ? '<span class="chip ex">exemplo</span>' : '');
+  const flags = (!t.pago && !t.cartao && !neutral ? '<span class="chip warn">previsto</span>' : '') + (t.invMov && !t.pago ? '<span class="chip warn">programado</span>' : '') + (t.ex ? '<span class="chip ex">exemplo</span>' : '');
   return `<div class="item" role="button" tabindex="0" data-edit="tx" data-id="${t.id}">${txTile(t)}<div class="main"><div class="t">${esc(title)}${flags}</div><div class="m">${sub.filter(Boolean).map(esc).join(' · ')}</div></div><div class="amt ${inc && !t.cartao ? 'pos' : ''}">${sign}${brl(t.valor)}</div></div>`;
 }
 function vDinheiro(){
@@ -961,8 +980,8 @@ function dayLabel(d){
 }
 function dinLanc(){
   const q = UI.q.trim().toLowerCase();
-  const tx = (q ? TX().filter(t => [t.desc, t.cat, get(t.conta)?.nome, get(t.cartao)?.nome].join(' ').toLowerCase().includes(q)) : monthTx(UI.month)).sort((a,b)=> a.data < b.data ? 1 : a.data > b.data ? -1 : 0);
-  const mt = monthTotals(UI.month);
+  const tx = applyFlt(q ? TX().filter(t => [t.desc, t.cat, t.sub, get(t.conta)?.nome, get(t.cartao)?.nome].join(' ').toLowerCase().includes(q)) : monthTx(UI.month)).sort((a,b)=> a.data < b.data ? 1 : a.data > b.data ? -1 : 0);
+  const mt = fltOn() ? FIN.monthTotals(tx, UI.month) : monthTotals(UI.month);
   let list = '';
   if (tx.length){
     TX_DATE = !!q;
@@ -972,7 +991,9 @@ function dinLanc(){
   } else list = `<section class="card">${emptyBox('receipt','blue', q ? 'Nada encontrado.' : 'Nenhum lançamento neste mês.', q ? '' : '<button class="btn pri sm" data-act="add-tx">Lançar gasto ou receita</button>')}</section>`;
   return `${UI.lastImp ? `<div class="banner">${ic('check')}<span><b>${UI.lastImp.n} lançamentos importados.</b> Confira abaixo.</span><button class="btn sm" data-act="undo-imp">Desfazer</button><button class="icon-btn" data-act="close-imp" aria-label="Fechar aviso" style="width:30px;height:30px">${ic('x')}</button></div>` : ''}
     <div class="toolrow" style="display:flex;gap:8px"><label class="search" style="flex:1">${ic('search')}<input id="search" type="search" placeholder="Buscar em todos os meses" value="${esc(UI.q)}" aria-label="Buscar lançamentos"></label><button class="btn" data-act="import-bank" title="Importar extrato do banco">${ic('doc')}<span>Importar</span></button><button class="btn" data-act="inbox" title="Ler notificação do banco">${ic('receipt')}<span>Notificação</span></button></div>
-    ${q ? `<p class="small muted" style="margin:0">${tx.length} resultado(s) para “${esc(UI.q)}”</p>` : `${monthNav()}
+    ${fltBar()}
+    ${fltOn() || q ? `<div class="between"><span class="small muted">${tx.length} lançamento(s) ${fltOn() ? 'com os filtros' : ''}${q ? ` para “${esc(UI.q)}”` : ''}</span><button class="link" data-act="export-lanc">${ic('sheet')}Exportar</button></div>` : ''}
+    ${q ? '' : `${monthNav()}
     <div class="stats3">
       <div class="card stat"><span class="label">Receitas</span><b class="pos">${brl0(mt.e)}</b></div>
       <div class="card stat"><span class="label">Despesas</span><b>${brl0(mt.s)}</b></div>
@@ -986,8 +1007,8 @@ function dinApagar(){
   const row = x => {
     const late = x.data < t;
     if (x.tipo === 'fatura') return `<div class="item">${tile('card', late ? 'red' : 'indigo')}<div class="main" role="button" tabindex="0" data-fat="${x.card.id}|${x.f.key}"><div class="t">Fatura ${esc(x.card.nome)}${late ? '<span class="chip bad">vencida</span>' : ''}</div><div class="m">${monthShort(x.f.key)} · vence ${fmtD(x.f.due)}${x.f.pago ? ` · pago ${brl(x.f.pago)}` : ''}</div></div><div class="amt"><div>${brl(x.valor)}</div><button class="btn sm pri" style="margin-top:6px" data-payfat="${x.card.id}|${x.f.key}">Pagar</button></div></div>`;
-    const inc = x.t.tipo === 'entrada';
-    return `<div class="item">${catTile(x.t.cat)}<div class="main" role="button" tabindex="0" data-edit="tx" data-id="${x.t.id}"><div class="t">${esc(x.t.desc||x.t.cat)}${late ? '<span class="chip bad">atrasado</span>' : ''}</div><div class="m">${fmtD(x.data)} · ${esc(x.t.cat)}${x.t.conta ? ' · '+esc(get(x.t.conta)?.nome||'') : ''}${x.t.parc && x.t.parc !== 'fixo' ? ' · '+esc(x.t.parc) : ''}</div></div><div class="amt"><div class="${inc ? 'pos' : ''}">${brl(x.valor)}</div><button class="btn sm" style="margin-top:6px" data-settle="${x.t.id}">${inc ? 'Recebi' : 'Paguei'}</button></div></div>`;
+    const inc = x.t.tipo === 'entrada' || x.t.invMov === 'resgate';
+    return `<div class="item">${x.t.invMov ? tile('trend','green') : catTile(x.t.cat)}<div class="main" role="button" tabindex="0" data-edit="tx" data-id="${x.t.id}"><div class="t">${esc(x.t.desc||x.t.cat)}${late ? '<span class="chip bad">atrasado</span>' : ''}</div><div class="m">${fmtD(x.data)} · ${esc(x.t.invMov ? (x.t.invMov === 'aporte' ? 'aplicação programada' : 'resgate programado') : x.t.cat)}${x.t.conta ? ' · '+esc(get(x.t.conta)?.nome||'') : ''}${x.t.parc && x.t.parc !== 'fixo' ? ' · '+esc(x.t.parc) : ''}</div></div><div class="amt"><div class="${inc ? 'pos' : ''}">${brl(x.valor)}</div>${x.t.invMov ? `<button class="btn sm pri" style="margin-top:6px" data-invconf="${x.t.id}">Confirmar</button>` : `<button class="btn sm" style="margin-top:6px" data-settle="${x.t.id}">${inc ? 'Recebi' : 'Paguei'}</button>`}</div></div>`;
   };
   const pagar = C.pagar.sort((a,b)=>a.data<b.data?-1:1), receber = C.receber.sort((a,b)=>a.data<b.data?-1:1);
   return `<div class="stats3" style="grid-template-columns:repeat(2,minmax(0,1fr))"><div class="card stat"><span class="label">A pagar · 60 dias</span><b class="neg">${brl(C.totPagar)}</b></div><div class="card stat"><span class="label">A receber · 60 dias</span><b class="pos">${brl(C.totReceber)}</b></div></div>
@@ -1042,29 +1063,30 @@ function dinOrc(){
 /* ---------- Patrimônio ---------- */
 function vPatrimonio(){
   const P = patrimonio();
-  const seg = `<div class="seg subnav">${[['inv','Investimentos'],['cart','Carteira'],['reco','Onde investir'],['sim','Simulador'],['metas','Metas'],['dividas','Dívidas']].map(([k,l])=>`<button class="${UI.pat===k?'on':''}" data-pat="${k}">${l}</button>`).join('')}</div>`;
-  const body = {inv:patInv, cart:patCart, reco:patReco, sim:simulator, metas:patMetas, dividas:patDividas}[UI.pat]();
+  const seg = `<div class="seg subnav">${[['inv','Investimentos'],['evol','Evolução'],['cart','Carteira'],['reco','Onde investir'],['sim','Simulador'],['metas','Metas'],['dividas','Dívidas']].map(([k,l])=>`<button class="${UI.pat===k?'on':''}" data-pat="${k}">${l}</button>`).join('')}</div>`;
+  const body = {inv:patInv, evol:patEvol, cart:patCart, reco:patReco, sim:simulator, metas:patMetas, dividas:patDividas}[UI.pat]();
   return `${head('Patrimônio', `Líquido <b class="money" style="color:var(--ink)">${brl(P.liquido)}</b>`)}${seg}${body}`;
 }
 const DIST_HUES = ['--h-green','--h-indigo','--h-blue','--h-orange','--h-purple','--h-teal','--h-pink','--h-yellow'];
 function patInv(){
   const s = settings(), t = today();
-  const invs = all('inv').map(i => ({i, r:CALC.evaluate(i,s,t), f:i.venc && i.idx!=='manual' ? CALC.evaluate(i,s,i.venc) : null})).sort((a,b)=> (a.i.venc||'9999') < (b.i.venc||'9999') ? -1 : 1);
+  const invs = invAtivos().map(i => ({i, r:CALC.evaluate(i,s,t), f:i.venc && i.idx!=='manual' ? CALC.evaluate(i,s,i.venc) : null})).sort((a,b)=> (a.i.venc||'9999') < (b.i.venc||'9999') ? -1 : 1);
   const sum = invSummary(), P = patrimonio();
   const byInst = {}; invs.filter(x => FGC_TYPES.includes(x.i.tipo) && x.i.inst).forEach(x => byInst[x.i.inst] = (byInst[x.i.inst]||0) + x.r.bruto);
   const fgc = Object.entries(byInst).filter(([,v]) => v > 250000);
   const byType = {}; invs.forEach(x => byType[x.i.tipo] = (byType[x.i.tipo]||0) + x.r.liq);
   const dist = Object.entries(byType).sort((a,b)=>b[1]-a[1]);
-  const idxTxt = i => i.idx==='manual' ? 'valor informado' : i.idx==='poup' ? 'poupança' : pct(i.taxa)+' '+({cdi:'do CDI',ipca:'+ IPCA',selic:'+ Selic',pre:'a.a.'}[i.idx]||'');
+  const idxTxt = i => i.idx==='manual' ? (+i.qtd && +i.precoAtual ? `${fmtQ(i.qtd)} × ${i.moeda && i.moeda !== 'BRL' ? i.moeda + ' ' : 'R$ '}${fmtQ(i.precoAtual)}` : 'valor informado') + (i.moeda && i.moeda !== 'BRL' ? ` · ${i.moeda}` : '') : i.idx==='poup' ? 'poupança' : pct(i.taxa)+' '+({cdi:'do CDI',ipca:'+ IPCA',selic:'+ Selic',pre:'a.a.'}[i.idx]||'');
   const ganho = sum.lq - sum.ap;
   return `<div class="dash"><div class="col">
     <section class="card hero"><div class="card-head"><span class="label">Investimentos hoje · líquido estimado</span><span class="label">CDI ${pct(s.cdi)}</span></div>
       <div class="big">${money(sum.lq)}</div>
       <div class="hero-stats" style="grid-template-columns:repeat(2,minmax(0,1fr))"><div><span class="label">Aplicado</span><b>${brl0(sum.ap)}</b></div><div><span class="label">Ganho líquido</span><b class="${ganho>=0?'pos':'neg'}">${ganho>=0?'+':''}${brl0(ganho)}</b></div></div>
     </section>
+    ${(() => { const L = liqResumo(); return invs.length ? `<div class="stats3"><div class="card stat"><span class="label">Resgatável já</span><b class="pos">${brl0(L.ja)}</b><small>sai em até 1 dia</small></div><div class="card stat"><span class="label">Em até 30 dias</span><b>${brl0(L.curto)}</b><small>D+30, ações</small></div><div class="card stat"><span class="label">Travado</span><b>${brl0(L.travado)}</b><small>até o vencimento</small></div></div>` : ''; })()}
     ${fgc.length ? `<div class="banner warn">${ic('shield')}<span><b>FGC:</b> ${fgc.map(([k,v])=>`${esc(k)} tem ${brl0(v)}`).join('; ')}. A garantia cobre até R$ 250 mil por CPF por instituição.</span></div>` : ''}
     <section class="card"><div class="card-head"><h3>Aplicações</h3><button class="link" data-act="add-inv">${ic('plus')}Adicionar</button></div>
-    ${invs.length ? `<div class="list">${invs.map(({i,r,f}) => { const dv = i.venc ? CALC.days(t,i.venc) : null, g = r.liq-(+i.aplicado||0); return `<div class="item" role="button" tabindex="0" data-edit="inv" data-id="${i.id}" style="align-items:flex-start">${invTile(i.tipo)}<div class="main"><div class="t">${esc(i.nome)}${i.ex?'<span class="chip ex">exemplo</span>':''}</div><div class="m">${esc(i.tipo)} · ${idxTxt(i)}${i.isento?' · isento de IR':''}${i.inst?' · '+esc(i.inst):''}</div><div class="m">${i.venc ? `vence ${fmtD(i.venc)}` : 'sem vencimento'}${dv!==null&&dv>=0&&dv<=60?`<span class="chip warn">${dv} dias</span>`:dv!==null&&dv<0?'<span class="chip">vencido</span>':''}${f?` · no vencimento ≈ <span class="money">${brl0(f.liq)}</span>`:''}</div></div><div class="amt"><div>${brl0(r.liq)}</div><div class="m ${g>=0?'pos':'neg'}">${g>=0?'+':''}${brl0(g)}</div></div></div>`; }).join('')}</div>`
+    ${invs.length ? `<div class="list">${invs.map(({i,r,f}) => { const dv = i.venc ? CALC.days(t,i.venc) : null, g = r.liq-(+i.aplicado||0); return `<div class="item" role="button" tabindex="0" data-edit="inv" data-id="${i.id}" style="align-items:flex-start">${invTile(i.tipo)}<div class="main"><div class="t">${esc(i.nome)}${i.ex?'<span class="chip ex">exemplo</span>':''}</div><div class="m">${esc(i.tipo)} · ${idxTxt(i)}${i.isento?' · isento de IR':''}${i.custodia||i.inst?' · '+esc(i.custodia||i.inst):''}${TX().filter(x => x.invId === i.id && !x.pago).map(x => ` · <span class="warn-t">${x.invMov === 'aporte' ? '+' : '−'}${brl0(x.valor)} programado ${fmtD(x.data)}</span>`).join('')}${(i.hist||[]).some(h => h.tipo==='provento') ? ' · proventos ' + brl0((i.hist||[]).filter(h => h.tipo==='provento').reduce((a,h)=>a+(+h.v||0),0)) : ''}</div><div class="m"><span class="chip ${invLiq(i).dias <= 1 ? 'good' : invLiq(i).dias <= 30 ? '' : 'warn'}" style="margin-left:0">${esc(invLiq(i).txt)}</span> ${i.venc ? `vence ${fmtD(i.venc)}` : 'sem vencimento'}${dv!==null&&dv>=0&&dv<=60?`<span class="chip warn">${dv} dias</span>`:dv!==null&&dv<0?'<span class="chip">vencido</span>':''}${f?` · no vencimento ≈ <span class="money">${brl0(f.liq)}</span>`:''}</div></div><div class="amt"><div>${brl0(r.liq)}</div><div class="m ${g>=0?'pos':'neg'}">${g>=0?'+':''}${brl0(g)}</div></div></div>`; }).join('')}</div>`
       : emptyBox('trend','green','Cadastre seu primeiro CDB, LCI ou Tesouro para ver quanto já rendeu e quanto vai render até o vencimento.', '<button class="btn pri sm" data-act="add-inv">Adicionar investimento</button>')}
     </section>
   </div><div class="col">
@@ -1107,7 +1129,7 @@ function simulator(){
       ${equiv ? `<div class="callout" style="margin-top:10px">${equiv}</div>` : ''}
       <p class="foot">Estimativa com CDI de ${pct(s.cdi)} e IPCA de ${pct(s.ipca)} ao ano mantidos constantes.</p>
       <button class="btn full" data-act="sim-save">${ic('plus')}Salvar como investimento</button>
-    </section></div></div>`;
+    </section></div></div>${sim2Html()}`;
 }
 function patMetas(){
   const ms = all('meta').sort((a,b)=>(a.prioridade||2)-(b.prioridade||2));
@@ -1168,6 +1190,7 @@ function formTx(t, opts = {}){
   const isNew = !t || !!opts.draft; const s = settings();
   t = {tipo:'saida', data:today(), pago:true, pag:'Pix', ...(t||{})};
   if (t.tipo === 'pagfatura'){ return formPayFatura(get(t.cartao), t.fatura, t); }
+  if (t.invMov && t.id && get(t.id)) return formInvProg(get(t.id));
   const defOnde = t.cartao ? 'k:'+t.cartao : t.conta ? 'c:'+t.conta : (ondeOpts()[0]?.[0] || '');
   const cats = [...new Set([...(s.catsOut||DEF_OUT), ...(s.catsIn||DEF_IN), ...(t.cat ? [t.cat] : [])])];
   const recT = t.rec ? get(t.rec) : null;
@@ -1176,11 +1199,13 @@ function formTx(t, opts = {}){
     {k:'valor', label:'Valor (R$)', type:'number', hint:'&nbsp;'},
     {k:'desc', label:'Descrição', full:true, ph:'Ex.: Supermercado'},
     {k:'cat', label:'Categoria', type:'select', options:cats},
+    {k:'sub', label:'Subcategoria (opcional)', ph:'Ex.: Condomínio, Luz, Uber'},
     {k:'data', label:'Data', type:'date', hint:'No cartão: data da compra'},
     {k:'onde', label:'Conta ou cartão', type:'select', options:ondeOpts()},
     {k:'contaDest', label:'Para a conta', type:'select', options:contaOpts(), hidden:true},
     {k:'pag', label:'Forma de pagamento', type:'select', options:PAY},
     {k:'pago', label:'Já foi pago/recebido (desmarque se é previsto)', type:'check'},
+    ...(invAtivos().length && !t.aplicarTx ? [{k:'aplicarEm', label:'Quando receber, aplicar em', type:'select', options:[['', 'Não aplicar'], ...invAtivos().filter(i => !i.moeda || i.moeda === 'BRL').map(i => [i.id, i.nome])], full:true}, {k:'aplicarValor', label:'Quanto aplicar (R$)', type:'number', hint:'Em branco: o valor todo'}] : []),
     ...(isNew ? [
       {k:'fixo', label:'Repete todo mês (salário, aluguel, assinatura, plano de celular)', type:'check'},
       {k:'recFim', label:'Até quando (opcional)', type:'date', hint:'Em branco: todo mês, sem data para acabar'},
@@ -1199,11 +1224,13 @@ function formTx(t, opts = {}){
     : !isNew && t.grupo ? `<div class="note" style="margin-top:8px">Este lançamento faz parte de um grupo (${esc(t.parc||'')}).</div>` : '') + '<div id="tx-prev" class="callout" style="margin-top:10px" hidden></div>';
   if (recT || (t.grupo && t.parc === 'fixo')) UI.txEdit = t.id;
   openSheet({title: isNew ? 'Novo lançamento' : 'Editar lançamento', fields, data, extra,
-    onDelete: isNew ? null : () => { if (recT) return recEnd(recT, t.data); if (t.grupo){ const fut = TX().filter(x => x.grupo === t.grupo && x.data >= t.data).map(x=>x.id); delMany(fut); } else del(t.id); },
+    onDelete: isNew ? null : () => { { const apl = t.aplicarTx && get(t.aplicarTx); if (apl && !apl.pago) del(apl.id); } if (recT) return recEnd(recT, t.data); if (t.grupo){ const fut = TX().filter(x => x.grupo === t.grupo && x.data >= t.data).map(x=>x.id); delMany(fut); } else del(t.id); },
     deleteLabel: recT ? 'Encerrar a partir deste mês' : !isNew && t.grupo ? 'Apagar esta e as seguintes' : 'Apagar',
     onInput: v => {
       const tr = v.tipo === 'transf', card = String(v.onde).startsWith('k:'), n = Math.max(1, Math.floor(+v.parcelas || 1)), parc = isNew && v.tipo === 'saida' && n > 1 && !v.fixo;
-      showF('contaDest', tr); showF('cat', !tr); showF('pag', !tr && !card); showF('pago', !card); divInput(v, v.valor, v.tipo === 'saida');
+      { const ok = v.tipo === 'entrada' && !v.pago && !card && !v.fixo; showF('aplicarEm', ok); showF('aplicarValor', ok && !!v.aplicarEm); }
+      showF('contaDest', tr); showF('cat', !tr); showF('sub', !tr); showF('pag', !tr && !card); showF('pago', !card); divInput(v, v.valor, v.tipo === 'saida');
+      { const si = $('#f-sub'); if (si && SHEET.lastSubCat !== v.cat){ SHEET.lastSubCat = v.cat; let dl = $('#dl-sub'); if (!dl){ dl = document.createElement('datalist'); dl.id = 'dl-sub'; $('#sheet-form').appendChild(dl); si.setAttribute('list', 'dl-sub'); si.setAttribute('autocomplete', 'off'); } dl.innerHTML = [...new Set(TX().filter(x => x.cat === v.cat && x.sub).map(x => x.sub))].map(x => `<option value="${esc(x)}">`).join(''); } }
       if (isNew){
         showF('fixo', !tr && !(n > 1)); showF('recFim', !tr && !!v.fixo && !(n > 1)); showF('recAuto', !tr && !!v.fixo && !card && !(n > 1));
         { const ra = $('#f-recAuto'); if (ra && v.pag === 'Débito automático' && SHEET.lastPag !== v.pag){ ra.checked = true; v.recAuto = true; } SHEET.lastPag = v.pag; }
@@ -1241,15 +1268,18 @@ function formTx(t, opts = {}){
         return;
       }
       const card = cartaoId ? get(cartaoId) : null;
-      const base = {kind:'tx', tipo:v.tipo, desc:v.desc, cat:v.cat, pag: card ? 'Crédito' : v.pag, conta, cartao:cartaoId, obs:v.obs};
+      const base = {kind:'tx', tipo:v.tipo, desc:v.desc, cat:v.cat, sub:(v.sub || '').trim(), pag: card ? 'Crédito' : v.pag, conta, cartao:cartaoId, obs:v.obs};
       if (!isNew){
         const upd = {...t, ...base, valor:CALC.r2(v.valor), data:v.data, pago: card ? true : v.pago, fatura: card ? CALC.faturaOf(card, v.data).key : '', div: mkDiv(v, v.valor, t.div)};
         if (recT && v.recAll){ const r2 = {...recT, tipo:v.tipo, valor:CALC.r2(v.valor), desc:v.desc, cat:v.cat, conta, cartao:cartaoId, pag:base.pag, div: v.dividir && v.divPessoa ? {pessoa:v.divPessoa, pct:+v.divPct || 50} : null}; putMany([upd, r2, ...recFuture(r2, t.data).filter(x => x.id !== t.id)]); return; }
-        put(upd); return;
+        const aplL = t.aplicarTx && get(t.aplicarTx), extra = [];
+        if (aplL && !aplL.pago && aplL.data !== v.data) extra.push({...aplL, data:v.data});
+        if (!aplL && v.aplicarEm && v.tipo === 'entrada' && !v.pago && conta){ const ap = progInvTx(get(v.aplicarEm), 'aporte', +v.aplicarValor || v.valor, v.data, conta); upd.aplicarTx = ap.id; extra.push(ap); }
+        putMany([upd, ...extra]); return;
       }
       if (v.fixo){
         if (v.recFim && v.recFim < v.data) return 'A data final precisa ser depois da primeira.';
-        const r = {id:uid('rec'), kind:'rec', tipo:v.tipo, valor:CALC.r2(v.valor), desc:v.desc || v.cat, cat:v.cat, conta, cartao:cartaoId, pag:base.pag, dia:+v.data.slice(8), inicio:v.data, fim:v.recFim || '', ativo:true, skip:[], auto: !!v.recAuto && !card, div: v.dividir && v.divPessoa ? {pessoa:v.divPessoa, pct:+v.divPct || 50} : null};
+        const r = {id:uid('rec'), kind:'rec', tipo:v.tipo, valor:CALC.r2(v.valor), desc:v.desc || v.cat, cat:v.cat, sub:(v.sub || '').trim(), conta, cartao:cartaoId, pag:base.pag, dia:+v.data.slice(8), inicio:v.data, fim:v.recFim || '', ativo:true, skip:[], auto: !!v.recAuto && !card, div: v.dividir && v.divPessoa ? {pessoa:v.divPessoa, pct:+v.divPct || 50} : null};
         const occ = recBuild(r, v.pago);
         putMany([r, ...occ]); toast(`Fixo criado até ${monthShort(ym(occ[occ.length - 1]?.data || v.data))}; renova sozinho todo mês`); if (opts.after) opts.after(); return;
       }
@@ -1259,6 +1289,7 @@ function formTx(t, opts = {}){
         for (let i = ini; i <= n; i++){ const d = addMonths(v.data, i - ini); list.push({...base, id:uid('tx'), valor:vals[i-1], data:d, parc:`${i}/${n}`, grupo, pago: card ? true : (i===ini ? v.pago : false), fatura: card ? CALC.faturaOf(card, d).key : ''}); }
       } else list.push({...base, id:uid('tx'), valor:CALC.r2(v.valor), data:v.data, pago: card ? true : v.pago, fatura: card ? CALC.faturaOf(card, v.data).key : ''});
       if (v.dividir) list.forEach(x => { x.div = mkDiv(v, x.valor); });
+      if (v.tipo === 'entrada' && !v.pago && v.aplicarEm && conta && list.length === 1 && get(v.aplicarEm)){ const ap = progInvTx(get(v.aplicarEm), 'aporte', +v.aplicarValor || v.valor, v.data, conta); list[0].aplicarTx = ap.id; list.push(ap); setTimeout(() => toast(`Receita prevista + aplicação programada em ${get(v.aplicarEm).nome}`), 400); }
       putMany(list); if (opts.after) opts.after();
     }});
 }
@@ -1348,31 +1379,40 @@ function formInv(i){
     {k:'idx', label:'Rentabilidade', type:'select', options:Object.entries(IDX_LABEL)}, {k:'taxa', label:'Taxa (%)', type:'number', hint:'Ex.: 110 (% do CDI) ou 6,5 (IPCA + 6,5%)'},
     {k:'aplicado', label:'Valor aplicado (R$)', type:'number'}, {k:'inicio', label:'Data da aplicação', type:'date'},
     {k:'venc', label:'Vencimento', type:'date'}, {k:'liquidez', label:'Liquidez', type:'select', options:['No vencimento','Diária','D+30','D+90','Outra']},
-    {k:'saldoReal', label:'Saldo atual do extrato (R$)', type:'number', hint:'Opcional: recalibra a estimativa'}, {k:'dataSaldo', label:'Data desse saldo', type:'date'},
+    {k:'moeda', label:'Moeda', type:'select', options:[['BRL','Real (R$)'],['USD','Dólar (US$)'],['EUR','Euro (€)']], def:'BRL'}, {k:'pais', label:'País', type:'select', options:['Brasil','EUA','Europa','Outro'], def:'Brasil'},
+    {k:'custodia', label:'Onde está guardado (custódia)', ph:'Ex.: Nomad, Avenue, XP, Inter', full:true},
+    {k:'aplicadoMoeda', label:'Valor aplicado na moeda', type:'number', hint:'Quanto virou em dólar/euro'},
+    {k:'qtd', label:'Quantidade (cotas/ações)', type:'number', hint:'Para ações, ETFs, FIIs'}, {k:'precoAtual', label:'Preço atual de cada uma', type:'number', hint:'Na moeda do investimento'},
+    {k:'saldoReal', label:'Saldo atual do extrato', type:'number', hint:'Opcional: recalibra a estimativa'}, {k:'dataSaldo', label:'Data desse saldo', type:'date'},
+    {k:'taxaAdm', label:'Taxas ao ano (%)', type:'number', hint:'Administração + custódia, se houver'},
     {k:'isento', label:'Isento de IR', type:'check'},
   ];
-  openSheet({title: isNew?'Novo investimento':'Editar investimento', fields, data:i, onDelete: isNew?null:()=>del(i.id),
-    extra: `<div id="inv-prev" class="callout" style="margin-top:10px"></div>`,
+  if (!isNew) UI.invEdit = i.id;
+  openSheet({title: isNew?'Novo investimento':'Editar investimento', fields, data:{moeda:'BRL', pais:'Brasil', ...i}, onDelete: isNew?null:()=>del(i.id),
+    extra: `<div id="inv-prev" class="callout" style="margin-top:10px"></div>${isNew ? '' : invHistHtml(i)}`,
     onInput: v => {
-      if (SHEET.lastTipo !== undefined && v.tipo !== SHEET.lastTipo){ const d = INV_TYPES[v.tipo]; if (d){ $('#f-idx').value = d.idx; $('#f-isento').checked = d.isento; v.idx = d.idx; v.isento = d.isento; } }
+      if (SHEET.lastTipo !== undefined && v.tipo !== SHEET.lastTipo){ const d = INV_TYPES[v.tipo]; if (d){ $('#f-idx').value = d.idx; $('#f-isento').checked = d.isento; v.idx = d.idx; v.isento = d.isento; if (d.moeda){ $('#f-moeda').value = d.moeda; v.moeda = d.moeda; $('#f-pais').value = 'EUA'; v.pais = 'EUA'; } } }
       SHEET.lastTipo = v.tipo; showF('taxa', v.idx !== 'manual' && v.idx !== 'poup');
+      const fx = v.moeda && v.moeda !== 'BRL'; showF('aplicadoMoeda', fx); showF('qtd', v.idx === 'manual'); showF('precoAtual', v.idx === 'manual'); showF('isento', !fx); showF('taxaAdm', v.idx !== 'manual');
       const el = $('#inv-prev'); if (!el) return;
       if (!(v.aplicado > 0) || !v.inicio){ el.innerHTML = 'Preencha valor e data para ver a projeção.'; return; }
       const s = settings(), r = CALC.evaluate(v, s, today()), f = v.venc && v.idx !== 'manual' ? CALC.evaluate(v, s, v.venc) : null;
-      el.innerHTML = `Hoje ≈ <b class="num">${brl(r.liq)}</b> líquido${f ? ` · No vencimento ≈ <b class="num">${brl(f.liq)}</b> (bruto ${brl(f.bruto)}, IR ${brl(f.ir)})` : ''}`;
+      el.innerHTML = `Hoje ≈ <b class="num">${brl(r.liq)}</b> líquido${r.fxr ? ` (${v.moeda} ${fmtQ(r.bm)} × ${brl(r.fxr)})` : ''}${f ? ` · No vencimento ≈ <b class="num">${brl(f.liq)}</b> (bruto ${brl(f.bruto)}, IR ${brl(f.ir)})` : ''}${r.fxr ? '<br><span class="small muted">No exterior: IR de 15% sobre o ganho em reais, declarado no ajuste anual (Lei 14.754/2023).</span>' : ''}${+v.taxaAdm ? `<br><span class="small muted">Já descontadas taxas de ${pct(v.taxaAdm)} ao ano.</span>` : ''}`;
     },
     onSave: v => {
       if (!v.nome) return 'Dê um nome ao investimento.';
       if (!(v.aplicado > 0)) return 'Informe o valor aplicado.';
       if (!v.inicio) return 'Informe a data da aplicação.';
       if (v.saldoReal && !v.dataSaldo) v.dataSaldo = today();
-      put({...i, ...v, kind:'inv', id: i.id || uid('inv')});
+      const prevI = isNew ? null : get(i.id), hist = [...(prevI?.hist || [])];
+      if (prevI && (+v.saldoReal || 0) !== (+prevI.saldoReal || 0) && +v.saldoReal) hist.push({id:uid('h'), d:v.dataSaldo || today(), tipo:'saldo', v:CALC.r2(v.moeda && v.moeda !== 'BRL' ? +v.saldoReal * (+(settings().cot || {})[v.moeda] || 1) : +v.saldoReal), vm: v.moeda && v.moeda !== 'BRL' ? +v.saldoReal : null});
+      put({...(prevI || i), ...v, hist, kind:'inv', id: i.id || uid('inv')});
     }});
 }
 function formMeta(g){
   const isNew = !g || !g.id; g = {prioridade:2, acumulado:0, inicio:today(), status:'ativa', ...(g||{})};
   const fields = [
-    {k:'nome', label:'Meta', full:true, ph:'Ex.: Reserva de emergência'}, {k:'alvo', label:'Valor desejado (R$)', type:'number'},
+    {k:'nome', label:'Meta', full:true, ph:'Ex.: Reserva de emergência'}, {k:'tipo', label:'Tipo', type:'select', options:META_T, def:'Outro'}, {k:'alvo', label:'Valor desejado (R$)', type:'number'},
     {k:'acumulado', label:'Já tenho (R$)', type:'number'}, {k:'prazo', label:'Prazo', type:'date'},
     {k:'prioridade', label:'Prioridade', type:'select', options:[[1,'Alta'],[2,'Média'],[3,'Baixa']]},
     {k:'status', label:'Status', type:'select', options:[['ativa','Ativa'],['pausada','Pausada'],['concluida','Concluída']]},
@@ -1415,16 +1455,17 @@ function formSettings(){
   const fields = [
     {k:'cdi', label:'CDI ao ano (%)', type:'number', hint:'Usado em CDB, LCI, LCA e Tesouro Selic'},
     {k:'ipca', label:'IPCA projetado ao ano (%)', type:'number', hint:'Para títulos IPCA+'},
+    {k:'cotUSD', label:'Cotação do dólar (R$)', type:'number', hint:'Converte investimentos no exterior'}, {k:'cotEUR', label:'Cotação do euro (R$)', type:'number'},
     {k:'catsOut', label:'Categorias de despesa (separe por vírgula)', type:'textarea', full:true},
     {k:'catsIn', label:'Categorias de receita (separe por vírgula)', type:'textarea', full:true},
   ];
-  openSheet({title:'Ajustes', fields, data:{...s, catsOut:(s.catsOut||DEF_OUT).join(', '), catsIn:(s.catsIn||DEF_IN).join(', ')},
+  openSheet({title:'Ajustes', fields, data:{...s, cotUSD:s.cot?.USD, cotEUR:s.cot?.EUR, catsOut:(s.catsOut||DEF_OUT).join(', '), catsIn:(s.catsIn||DEF_IN).join(', ')},
     extra:`<div class="stack" style="margin-top:14px;gap:12px">
       ${fbSettingsBlock()}
       <div><h3 style="margin-bottom:6px">Seus dados</h3><p class="note" style="margin:0">${S.mode === 'cloud' ? 'Guardados na sua conta Claude, criptografados com sua senha, e sincronizados entre os aparelhos.' : FB.sess ? 'Guardados neste aparelho e sincronizados automaticamente pelo Firebase, sempre criptografados.' : 'Guardados neste aparelho, criptografados com sua senha. Sem a sincronização automática, leve ao outro aparelho pelo arquivo de sincronização.'}${lsGet('caderneta.lastsync') ? ` Última sincronização por arquivo: ${fmtD(CALC.iso(new Date(+lsGet('caderneta.lastsync'))))}.` : ''}</p></div>
       <div class="actions"><button class="btn sm pri" data-act="sync-export">${ic('arrows')}Gerar arquivo de sincronização</button><button class="btn sm" data-act="import">${ic('doc')}Importar arquivo</button></div>
       <div class="actions"><button class="btn sm" data-act="import-bank">${ic('bank')}Importar extrato do banco</button><button class="btn sm" data-act="change-pass">${ic('lock')}Trocar usuário ou senha</button></div>
-      <div class="actions"><button class="btn sm" data-act="pin">${ic('key')}${pinDoc() ? 'PIN ativo · trocar' : 'Ativar PIN de 6 dígitos'}</button><button class="btn sm" data-act="xlsx">${ic('sheet')}Exportar para Excel</button><button class="btn sm" data-act="rules">${ic('rule')}Regras de categoria (${all('rule').length})</button></div>
+      <div class="actions"><button class="btn sm" data-act="pin">${ic('key')}${pinDoc() ? 'PIN ativo · trocar' : 'Ativar PIN de 6 dígitos'}</button><button class="btn sm" data-act="xlsx">${ic('sheet')}Exportar para Excel</button><button class="btn sm" data-act="rules">${ic('rule')}Regras de categoria (${all('rule').length})</button><button class="btn sm" data-act="log">${ic('history')}Histórico de alterações</button></div>
       <div class="actions"><button class="btn sm" data-act="export">Backup aberto (sem senha)</button>${[...S.items.values()].some(x=>x.ex)?'<button class="btn sm" data-act="unseed">Apagar exemplos</button>':'<button class="btn sm" data-act="seed">Carregar exemplos</button>'}</div>
       <p class="note" style="margin:0">O backup aberto não tem senha: serve para recuperar tudo se você esquecer a senha. Guarde em local seguro. O app bloqueia sozinho após 5 minutos sem uso ou 1 minuto fora da tela.</p></div>`,
     onSave: v => {
@@ -1432,7 +1473,7 @@ function formSettings(){
       const parse = s => [...new Set(String(s).split(',').map(x=>x.trim()).filter(Boolean))];
       const out = parse(v.catsOut), inn = parse(v.catsIn);
       if (!out.length || !inn.length) return 'Mantenha ao menos uma categoria de cada tipo.';
-      put({...(get('settings')||{}), id:'settings', kind:'settings', cdi:v.cdi, ipca:+v.ipca||0, catsOut:out, catsIn:inn});
+      put({...(get('settings')||{}), id:'settings', kind:'settings', cdi:v.cdi, ipca:+v.ipca||0, cot:{USD:+v.cotUSD||5.5, EUR:+v.cotEUR||6.2}, catsOut:out, catsIn:inn});
     }});
 }
 function formChangePass(){
@@ -2623,6 +2664,7 @@ function seed(){
   mk({id:uid('w'), kind:'watch', nome:'GRU → LIS · março', cat:'passagem', alvo:3500, status:'ativo', hist:[{d:addDays(t,-20), p:4300}, {d:addDays(t,-10), p:3900}, {d:t, p:3700}]});
   { const cd = L.find(x => x.id === 'card_ex1'); if (cd) Object.assign(cd, {ptsProg:'prog_livelo', ptsUnid:'dolar', ptsTaxa:2, ptsCot:5.5, ptsDias:30}); const ps = L.find(x => x.kind === 'tcost' && x.cat === 'Passagem' && +x.milhas); if (ps) Object.assign(ps, {equiv:6200, passageiros:'Você, Ana'}); }
   mk({id:'rec_ex1', kind:'rec', tipo:'saida', valor:49.9, desc:'Sócio-torcedor', cat:'Assinaturas', cartao:'card_ex1', conta:'', pag:'Crédito', dia:5, inicio:addMonths(t,-1).slice(0,8)+'05', fim:'', ativo:true, skip:[]});
+  mk({id:uid('inv'), kind:'inv', nome:'ETF de ações americanas (exemplo)', tipo:'Ações/ETF no exterior', idx:'manual', moeda:'USD', pais:'EUA', custodia:'Corretora no exterior', qtd:10, precoAtual:510, aplicado:26000, aplicadoMoeda:4700, inicio:addMonths(t,-10), isento:false, hist:[{id:uid('h'), d:addMonths(t,-10), tipo:'aporte', v:26000, obs:'Compra inicial'}, {id:uid('h'), d:addMonths(t,-3), tipo:'provento', v:180, obs:'Dividendos'}]});
   mk({id:uid('fx'), kind:'fx', moeda:'EUR', qtd:800, brl:5296, data:addDays(t,-15), onde:'Wise'});
   mk({id:uid('doc'), kind:'doc', pessoa:'Você', tipo:'Passaporte', validade:addMonths(t,7)});
   mk({id:uid('doc'), kind:'doc', pessoa:'Ana', tipo:'Passaporte', validade:addMonths(t,40)});
@@ -2654,7 +2696,7 @@ async function saveFile(name, data, type = 'application/json'){
 }
 async function exportData(){
   const json = JSON.stringify({app:'caderneta', v:2, em:new Date().toISOString(), itens:[...S.items.values()]}, null, 1);
-  if (await saveFile(`caderneta-backup-aberto-${today()}.json`, json)) toast('Backup gerado');
+  if (await saveFile(`caderneta-backup-aberto-${today()}.json`, json)){ markBackup(); toast('Backup gerado'); }
 }
 async function checkPass(user, pass){
   const L = lockDoc(); if (!L) return false;
@@ -2667,7 +2709,7 @@ async function mergeItems(list){
     const cur = S.items.get(x.id) || S.dels.get(x.id);
     if (!cur || (+x.upd || 0) > (+cur.upd || 0)) apply.push(x);
   }
-  if (apply.length) await storeItems(apply);
+  if (apply.length) await storeItems(apply, {nolog:true});
   return apply.length;
 }
 function formSyncExport(){
@@ -2682,7 +2724,7 @@ function formSyncExport(){
         const salt = CRYPTO.newSalt(), key = await CRYPTO.derive(user, v.pass, salt, CRYPTO.ITER);
         const enc = await CRYPTO.enc(key, {items:[...S.items.values(), ...S.dels.values()]});
         const file = JSON.stringify({app:'caderneta-sync', v:1, user, salt, iter:CRYPTO.ITER, em:new Date().toISOString(), ...enc});
-        if (await saveFile(`caderneta-sincronizacao-${today()}.json`, file)){ lsSet('caderneta.lastsync', String(Date.now())); toast('Arquivo gerado'); render(); }
+        if (await saveFile(`caderneta-sincronizacao-${today()}.json`, file)){ lsSet('caderneta.lastsync', String(Date.now())); markBackup(); toast('Arquivo gerado'); render(); }
       })();
     }});
 }
@@ -3058,7 +3100,8 @@ const EVK = {rec:['Receita','--pos'], desp:['Despesa','--neg'], venc:['Venciment
 function calEvents(m){
   const ev = {}, add = (d, e) => { if (d && ym(d) === m) (ev[d] = ev[d] || []).push(e); }, txs = TX();
   for (const t of txs){
-    if (t.tipo === 'entrada' && !t.cartao) add(t.data, {k:'rec', t:t.desc || t.cat, m:[t.cat, get(t.conta)?.nome].filter(Boolean).join(' · '), v:+t.valor, prev:!t.pago, attr:`data-edit="tx" data-id="${t.id}"`});
+    if (t.invMov) add(t.data, {k:'inv', t:t.desc, m: t.pago ? 'confirmado' : (t.invMov === 'aporte' ? 'sai da conta e vai para o investimento' : 'volta para a conta'), v: t.invMov === 'aporte' ? -t.valor : +t.valor, prev:!t.pago, attr:`data-edit="tx" data-id="${t.id}"`});
+    else if (t.tipo === 'entrada' && !t.cartao) add(t.data, {k:'rec', t:t.desc || t.cat, m:[t.cat, get(t.conta)?.nome].filter(Boolean).join(' · '), v:+t.valor, prev:!t.pago, attr:`data-edit="tx" data-id="${t.id}"`});
     else if (t.tipo === 'saida') add(t.data, {k:'desp', t:t.desc || t.cat, m:[t.cat, ondeLabel(t), t.parc && t.parc !== 'fixo' ? t.parc : ''].filter(Boolean).join(' · '), v:-t.valor, prev:!t.cartao && !t.pago, card:!!t.cartao, attr:`data-edit="tx" data-id="${t.id}"`});
   }
   for (const c of all('cartao').filter(c => c.ativo !== false)){
@@ -3073,7 +3116,7 @@ function calEvents(m){
   for (const tr of all('trip')){ add(tr.ida, {k:'trip', t:`Ida: ${tr.destino}`, m:'viagem', attr:`data-trip="${tr.id}"`}); if (tr.volta && tr.volta !== tr.ida) add(tr.volta, {k:'trip', t:`Volta: ${tr.destino}`, m:'viagem', attr:`data-trip="${tr.id}"`}); }
   for (const d of all('doc')) if (d.validade) add(d.validade, {k:'trip', t:`${d.tipo} de ${d.pessoa} vence`, m:'documento', attr:`data-edit="doc" data-id="${d.id}"`});
   for (const c of all('tcost')) if (c.cat === 'Passagem' && c.rIni && c.status !== 'cotado' && c.rIni.length >= 16) add(addDays(c.rIni.slice(0, 10), -2), {k:'trip', t:`Check-in abre: ${[c.origem, c.destinoR].filter(Boolean).join(' → ') || c.fornecedor || 'voo'}`, m:`embarque ${fmtDT(c.rIni)}${c.localizador ? ' · ' + c.localizador : ''}`, attr:`data-trip="${c.trip}"`});
-  for (const i of all('inv')) if (i.venc) add(i.venc, {k:'inv', t:`${i.nome} vence`, m:'decida onde reinvestir', attr:`data-edit="inv" data-id="${i.id}"`});
+  for (const i of invAtivos()) if (i.venc) add(i.venc, {k:'inv', t:`${i.nome} vence`, m:'decida onde reinvestir', attr:`data-edit="inv" data-id="${i.id}"`});
   for (const d of all('divida')) if (d.status !== 'quitada' && d.proxVenc && +d.parcela) add(d.proxVenc, {k:'desp', t:`Parcela: ${d.desc}`, m:d.credor || 'dívida', v:-d.parcela, prev:true, attr:`data-edit="divida" data-id="${d.id}"`});
   return ev;
 }
@@ -3117,8 +3160,8 @@ function flowAvgs(){
   for (const t of TX()){ if (t.parc || !ms.includes(ym(t.data))) continue; if (t.tipo === 'saida') out += +t.valor; else if (t.tipo === 'entrada'){ if (t.cartao) out -= +t.valor; else inn += +t.valor; } }
   return {out: Math.max(0, out / 3), inn: inn / 3};
 }
-function flowProj(h = FLX.h){
-  const t = today(), cur = ym(t), txs = TX(), A = flowAvgs();
+function flowProj(h = FLX.h, extra = []){
+  const t = today(), cur = ym(t), txs = extra.length ? [...TX(), ...extra] : TX(), A = flowAvgs();
   const fats = all('cartao').flatMap(c => FIN.faturasDoCartao(c, txs).filter(f => f.pend > 0));
   const divs = all('divida').filter(d => d.status !== 'quitada' && +d.parcela > 0);
   const trips = all('trip').filter(tr => tr.status !== 'concluida' && tr.ida && tr.ida >= t);
@@ -3127,7 +3170,7 @@ function flowProj(h = FLX.h){
   for (let i = 0; i < h; i++){
     const m = mAdd(cur, i), inM = d => i === 0 ? ym(d) <= m : ym(d) === m;
     let ent = 0, sai = 0, fat = 0, dv = 0, viag = 0;
-    for (const x of txs){ if (x.pago || x.cartao || !inM(x.data)) continue; if (x.tipo === 'entrada') ent += +x.valor; else if (x.tipo === 'saida') sai += +x.valor; }
+    for (const x of txs){ if (x.pago || x.cartao || !inM(x.data)) continue; if (x.tipo === 'entrada' || x.invMov === 'resgate') ent += +x.valor; else if (x.tipo === 'saida' || x.invMov === 'aporte') sai += +x.valor; }
     for (const f of fats) if (inM(f.due)) fat += f.pend;
     for (const d of divs){ const k = monthsBetween(d.proxVenc ? ym(d.proxVenc) : cur, m); if (k >= 0 && (!+d.restantes || k < +d.restantes) && !(i === 0 && d.proxVenc && d.proxVenc < t)) dv += +d.parcela; }
     if (FLX.trips) for (const tr of trips) if (ym(tr.ida) === m){ const T = tripTotals(tr); viag += Math.max(0, (T.orc || T.previsto) - T.gasto); }
@@ -3140,9 +3183,10 @@ function flowProj(h = FLX.h){
 function vFluxo(){
   const {rows, A, ini} = flowProj(), neg = rows.find(r => r.saldo < 0), min = rows.reduce((a, r) => r.saldo < a.saldo ? r : a, rows[0]), last = rows[rows.length - 1];
   const chip = (k, l) => `<button class="chip-t ${FLX[k] ? 'on' : ''}" data-flx="${k}" aria-pressed="${FLX[k]}">${FLX[k] ? ic('check') : ''}${l}</button>`;
-  return `<div class="between" style="flex-wrap:wrap"><div class="seg sm">${[3, 6, 12, 24].map(h => `<button class="${FLX.h === h ? 'on' : ''}" data-fh="${h}">${h} meses</button>`).join('')}</div></div>
+  return `<div class="between" style="flex-wrap:wrap;gap:8px"><button class="btn sm pri" data-act="compra">${ic('cartq')}Posso comprar?</button><div class="seg sm">${[3, 6, 12, 24].map(h => `<button class="${FLX.h === h ? 'on' : ''}" data-fh="${h}">${h} meses</button>`).join('')}</div></div>
     <div class="stats3"><div class="card stat"><span class="label">Saldo hoje</span><b>${brl0(ini)}</b></div><div class="card stat"><span class="label">Menor saldo</span><b class="${min.saldo < 0 ? 'neg' : ''}">${brl0(min.saldo)}</b><small>${cap(monthShort(min.m))}</small></div><div class="card stat"><span class="label">Em ${monthShort(last.m)}</span><b class="${last.saldo < 0 ? 'neg' : ''}">${brl0(last.saldo)}</b></div></div>
-    ${neg ? `<div class="banner warn">${ic('alert')}<span><b>Atenção:</b> em ${monthName(neg.m).toLowerCase()} o saldo previsto fica negativo em <b class="money">${brl0(-neg.saldo)}</b>. Antecipe uma receita, adie um gasto ou resgate parte de um investimento.</span></div>` : ''}
+    ${neg ? `<div class="banner warn">${ic('alert')}<span><b>Atenção:</b> em ${monthName(neg.m).toLowerCase()} o saldo previsto fica negativo em <b class="money">${brl0(-neg.saldo)}</b>. Antecipe uma receita, adie um gasto ou resgate parte de um investimento.${coberturaHtml(Math.ceil(-neg.saldo / 100) * 100, neg.m + '-01')}</span></div>` : ''}
+    ${dailyCard()}
     <div class="dash"><div class="col">
       <section class="card"><div class="card-head"><h3>Saldo projetado</h3><span class="label">fim de cada mês</span></div>
         ${lineSvg(rows.map(r => r.saldo), rows.map(r => cap(monthShort(r.m))), {aria:'Saldo projetado por mês'})}
@@ -3311,7 +3355,7 @@ function vRel(){
     <div class="dash"><div class="col">
       <section class="card"><div class="card-head"><h3>Últimos 12 meses</h3></div>${barSvg([{vals:tots.map(x => x.e), col:'--pos'}, {vals:tots.map(x => x.s), col:'--h-orange'}], months.map(x => cap(MES[+x.slice(5) - 1])), {hl:11, aria:'Receitas e despesas em 12 meses'})}
         <div class="actions" style="gap:16px;margin-top:8px"><span class="legend"><i style="background:var(--pos)"></i>Receitas</span><span class="legend"><i style="background:var(--h-orange)"></i>Despesas</span></div></section>
-      <section class="card"><div class="card-head"><h3>Categorias</h3><span class="label">mês · média 3 meses</span></div>${D.cats.length ? `<table class="mini">${D.cats.map(c => `<tr><td><span class="row" style="gap:8px">${esc(c.c)}</span></td><td>${brl0(c.v)} <span class="muted" style="font-weight:400">· ${brl0(c.a)}</span> ${pctDelta(c.v, c.a, true)}</td></tr>`).join('')}</table>` : '<p class="small muted">Sem despesas neste mês.</p>'}</section>
+      <section class="card"><div class="card-head"><h3>Categorias</h3><span class="label">mês · média 3 meses</span></div>${D.cats.length ? `<table class="mini">${D.cats.map(c => { const subs = {}; monthTx(m).filter(t => t.tipo === 'saida' && t.cat === c.c && t.sub).forEach(t => subs[t.sub] = (subs[t.sub] || 0) + (+t.valor)); const sl = Object.entries(subs).sort((a, b) => b[1] - a[1]); return `<tr><td><span class="row" style="gap:8px">${esc(c.c)}</span>${sl.length ? `<div class="small muted">${sl.slice(0, 4).map(([k, v]) => `${esc(k)} ${brl0(v)}`).join(' · ')}</div>` : ''}</td><td>${brl0(c.v)} <span class="muted" style="font-weight:400">· ${brl0(c.a)}</span> ${pctDelta(c.v, c.a, true)}</td></tr>`; }).join('')}</table>` : '<p class="small muted">Sem despesas neste mês.</p>'}</section>
     </div><div class="col">
       ${up.length || down.length ? `<section class="card"><div class="card-head"><h3>O que mudou</h3><span class="label">vs. média de 3 meses</span></div><div class="list">
         ${up.map(c => `<div class="item">${catTile(c.c)}<div class="main"><div class="t">${esc(c.c)}</div><div class="m">subiu ${brl0(c.d)} (média ${brl0(c.a)})</div></div><span class="chip bad">▲ ${Math.round(c.d / c.a * 100)}%</span></div>`).join('')}
@@ -3483,7 +3527,7 @@ const SIDE = [
   {tab:'inicio', label:'Início', icon:'home'},
   {tab:'dinheiro', label:'Dinheiro', icon:'wallet', key:'din', subs:[['lanc','Lançamentos'],['apagar','A pagar'],['contas','Contas'],['cartoes','Cartões'],['parc','Parcelas ativas'],['div','Divididos'],['assin','Fixos e assinaturas'],['orc','Orçamento'],['conc','Conciliação']]},
   {tab:'planejar', label:'Planejar', icon:'chart', key:'plan', subs:PLAN_TABS},
-  {tab:'patrimonio', label:'Patrimônio', icon:'pie', key:'pat', subs:[['inv','Investimentos'],['cart','Carteira'],['reco','Onde investir'],['sim','Simulador'],['metas','Metas'],['dividas','Dívidas']]},
+  {tab:'patrimonio', label:'Patrimônio', icon:'pie', key:'pat', subs:[['inv','Investimentos'],['evol','Evolução'],['cart','Carteira'],['reco','Onde investir'],['sim','Simulador'],['metas','Metas'],['dividas','Dívidas']]},
   {tab:'pontos', label:'Milhas', icon:'star', key:'mil', subs:[['carteira','Carteira'],['mov','Movimentos'],['camp','Bônus'],['emis','Emissões'],['metas','Metas'],['vendas','Vendas'],['clubes','Clubes'],['cpf','Beneficiários'],['calc','Simular']]},
   {tab:'viagens', label:'Viagens', icon:'plane', key:'vtab', subs:[['viagens','Viagens'],['comp','Comparativo'],['orc','Orçamentos'],['precos','Monitor de preços'],['moeda','Moeda estrangeira'],['docs','Documentos']]},
 ];
@@ -3753,7 +3797,7 @@ function formBenef(b){
 function irData(ano){
   const fim = `${ano}-12-31`, fimAnt = `${ano - 1}-12-31`, s = settings(), txs = TX();
   const contas = all('conta').map(c => ({c, ant: c.dataIni && c.dataIni > fimAnt ? null : FIN.contaSaldo(c, txs.filter(t => t.data <= fimAnt)), at: c.dataIni && c.dataIni > fim ? null : FIN.contaSaldo(c, txs.filter(t => t.data <= fim))}));
-  const grupo = i => i.tipo === 'Poupança' ? ['04','01','Depósito em conta poupança'] : ['LCI','LCA','CRI/CRA'].includes(i.tipo) || i.isento ? ['04','03','Títulos isentos de tributação'] : ['CDB','Tesouro Selic','Tesouro IPCA+','Tesouro Prefixado','Debênture'].includes(i.tipo) ? ['04','02','Títulos públicos e privados sujeitos à tributação'] : i.tipo === 'Cripto' ? ['08','—','Criptoativos (código conforme o ativo)'] : i.tipo === 'Previdência' ? ['—','—','Previdência: siga o informe da seguradora'] : ['—','—','Fundos, ações ou FII: siga o informe da corretora'];
+  const grupo = i => i.moeda && i.moeda !== 'BRL' ? ['—','—','Ativo no exterior: informe país, instituição e valor em reais; rendimentos na ficha de aplicações no exterior (Lei 14.754/2023)'] : i.tipo === 'Poupança' ? ['04','01','Depósito em conta poupança'] : ['LCI','LCA','CRI/CRA'].includes(i.tipo) || i.isento ? ['04','03','Títulos isentos de tributação'] : ['CDB','Tesouro Selic','Tesouro IPCA+','Tesouro Prefixado','Debênture'].includes(i.tipo) ? ['04','02','Títulos públicos e privados sujeitos à tributação'] : i.tipo === 'Cripto' ? ['08','—','Criptoativos (código conforme o ativo)'] : i.tipo === 'Previdência' ? ['—','—','Previdência: siga o informe da seguradora'] : ['—','—','Fundos, ações ou FII: siga o informe da corretora'];
   const invs = all('inv').filter(i => i.inicio && i.inicio <= fim).map(i => { const ativo = !i.venc || i.venc > fim, r1 = CALC.evaluate(i, s, i.inicio > fimAnt ? i.inicio : fimAnt), r2 = CALC.evaluate(i, s, ativo ? fim : i.venc); return {i, g:grupo(i), ant: i.inicio <= fimAnt && (!i.venc || i.venc > fimAnt) ? +i.aplicado || 0 : 0, at: ativo ? +i.aplicado || 0 : 0, rend: Math.max(0, r2.bruto - r1.bruto), venceu: !ativo && i.venc >= `${ano}-01-01`, liqVenc: !ativo ? r2.liq - (+i.aplicado || 0) : 0}; });
   const yTx = txs.filter(t => (t.data || '').startsWith(String(ano)));
   const rec = {}; yTx.filter(t => t.tipo === 'entrada' && !t.cartao).forEach(t => rec[t.cat] = (rec[t.cat] || 0) + (+t.valor));
@@ -3845,13 +3889,13 @@ function dinAssin(){
 }
 
 /* ---------- 13. Carteira de investimentos ---------- */
-const CLS = {pos:['Pós-fixado (CDI/Selic)','--h-green'], infl:['Inflação (IPCA+)','--h-indigo'], pre:['Prefixado','--h-blue'], rv:['Renda variável','--h-purple'], prev:['Previdência','--h-teal'], cripto:['Cripto','--h-orange']};
-const invClass = i => i.tipo === 'Cripto' ? 'cripto' : i.tipo === 'Previdência' ? 'prev' : i.idx === 'ipca' ? 'infl' : i.idx === 'pre' ? 'pre' : ['cdi','selic','poup'].includes(i.idx) ? 'pos' : 'rv';
-const PERFIS = {conservador:['Conservador', {pos:70, infl:20, pre:10, rv:0, prev:0, cripto:0}], moderado:['Moderado', {pos:50, infl:25, pre:10, rv:15, prev:0, cripto:0}], arrojado:['Arrojado', {pos:30, infl:25, pre:10, rv:30, prev:0, cripto:5}]};
+const CLS = {ext:['Exterior (dólar/euro)','--h-pink'], pos:['Pós-fixado (CDI/Selic)','--h-green'], infl:['Inflação (IPCA+)','--h-indigo'], pre:['Prefixado','--h-blue'], rv:['Renda variável','--h-purple'], prev:['Previdência','--h-teal'], cripto:['Cripto','--h-orange']};
+const invClass = i => i.moeda && i.moeda !== 'BRL' ? 'ext' : i.tipo === 'Cripto' ? 'cripto' : i.tipo === 'Previdência' ? 'prev' : i.idx === 'ipca' ? 'infl' : i.idx === 'pre' ? 'pre' : ['cdi','selic','poup'].includes(i.idx) ? 'pos' : 'rv';
+const PERFIS = {conservador:['Conservador', {ext:5, pos:65, infl:20, pre:10, rv:0, prev:0, cripto:0}], moderado:['Moderado', {ext:10, pos:45, infl:25, pre:10, rv:10, prev:0, cripto:0}], arrojado:['Arrojado', {ext:20, pos:25, infl:20, pre:5, rv:25, prev:0, cripto:5}]};
 function invYield(i, s){ const t = (+i.taxa || 0), cdi = +s.cdi || 0, ip = +s.ipca || 0; return i.idx === 'cdi' ? cdi * t / 100 : i.idx === 'selic' ? cdi + t : i.idx === 'pre' ? t : i.idx === 'ipca' ? ((1 + ip / 100) * (1 + t / 100) - 1) * 100 : i.idx === 'poup' ? (cdi > 8.5 ? 6.17 : cdi * .7) : null; }
 let CART_AP = 1000;
 function patCart(){
-  const s = settings(), t = today(), invs = all('inv').map(i => ({i, v:CALC.evaluate(i, s, t).liq, c:invClass(i), y:invYield(i, s)})), tot = invs.reduce((a, x) => a + x.v, 0);
+  const s = settings(), t = today(), invs = invAtivos().map(i => ({i, v:CALC.evaluate(i, s, t).liq, c:invClass(i), y:invYield(i, s)})), tot = invs.reduce((a, x) => a + x.v, 0);
   const alvo = s.aloc || PERFIS[s.perfil || 'moderado'][1], by = {}; invs.forEach(x => by[x.c] = (by[x.c] || 0) + x.v);
   const yk = invs.filter(x => x.y != null), wy = yk.reduce((a, x) => a + x.v, 0) ? yk.reduce((a, x) => a + x.y * x.v, 0) / yk.reduce((a, x) => a + x.v, 0) : 0;
   const ap = +CART_AP || 0, novoTot = tot + ap, gaps = Object.keys(CLS).map(k => ({k, gap: Math.max(0, novoTot * (alvo[k] || 0) / 100 - (by[k] || 0))})), gsum = gaps.reduce((a, x) => a + x.gap, 0);
@@ -3868,6 +3912,7 @@ function patCart(){
     </div><div class="col">
       <section class="card"><div class="card-head"><h3>Rentabilidade × CDI</h3><span class="label">CDI ${pct(s.cdi)}</span></div><div class="list">${invs.sort((a, b) => (b.y || 0) - (a.y || 0)).map(x => `<div class="item" role="button" tabindex="0" data-edit="inv" data-id="${x.i.id}">${invTile(x.i.tipo)}<div class="main"><div class="t">${esc(x.i.nome)}</div><div class="m">${esc(x.i.tipo)} · ${brl0(x.v)}${x.i.isento ? ' · isento' : ''}</div></div><div class="amt">${x.y != null ? `<div>${pct(Math.round(x.y * 100) / 100)}</div><div class="m">${s.cdi ? Math.round((x.i.isento ? x.y / (1 - .15) : x.y) / s.cdi * 100) : 0}% CDI${x.i.isento ? ' bruto eq.' : ''}</div>` : '<div class="m">variável</div>'}</div></div>`).join('')}</div>
         <p class="foot">Taxas anuais brutas estimadas com CDI e IPCA dos Ajustes. Para isentos, o “% CDI bruto equivalente” considera IR de 15% (prazos longos).</p></section>
+      ${diversCard()}
     </div></div>`;
 }
 function formAloc(){
@@ -3941,7 +3986,7 @@ async function exportXlsx(){
   add('Viagens', all('trip').map(tr => { const T = tripTotals(tr); return {Viagem:tr.nome || tr.destino, Destino:tr.destino, Ida:tr.ida || '', Volta:tr.volta || '', Dias:T.dias, Viajantes:tr.viajantes || '', 'Gasto (R$)':CALC.r2(T.gasto), Milhas:T.milhas, 'Orçamento (R$)':T.orc}; }));
   add('Viagens - gastos', all('tcost').map(c => ({Viagem:get(c.trip)?.destino || '', Data:c.data, Categoria:c.cat, Descrição:c.desc || '', Fornecedor:c.fornecedor || '', Localizador:c.localizador || '', Situação:(RES_ST[c.status || 'pago'] || [''])[0], Moeda:c.moeda || 'BRL', 'Valor na moeda':+c.valorMoeda || '', Câmbio:+c.cambio || '', 'Valor (R$)':+c.valor || 0, Milhas:+c.milhas || 0, Programa:nm(c.prog), 'Pago por':c.pagoPor || ''})));
   const data = XLSX.write(wb, {bookType:'xlsx', type:'array'});
-  if (await saveFile(`caderneta-${t}.xlsx`, new Uint8Array(data), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')) toast('Planilha gerada');
+  if (await saveFile(`caderneta-${t}.xlsx`, new Uint8Array(data), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')){ markBackup(); toast('Planilha gerada'); }
 }
 
 /* ---------- 15. Desbloqueio rápido com PIN ---------- */
@@ -4010,6 +4055,8 @@ function insights(){
   for (const p of all('prog')){ const st = progStats(p.id), val = st.saldo / 1000 * (+p.milheiro || 0); if (val < 500) continue; const last = all('pmov').filter(m => m.prog === p.id && +m.qtd < 0).sort((a, b) => a.data < b.data ? 1 : -1)[0]; if (!last || CALC.days(last.data, t) > 180) out.push({p:1.5, icon:'star', hue:'orange', t:`${int(st.saldo)} pontos ${p.nome} parados (≈ ${brl0(val)})`, m:'Sem uso há mais de 6 meses. Pontos desvalorizam e expiram: planeje uma emissão ou transfira com bônus.', go:'pontos:metas'}); }
   // fatura alta
   for (const c of all('cartao').filter(c => c.ativo !== false)){ const fs = FIN.faturasDoCartao(c, TX()), atual = CALC.faturaOf(c, t).key, f = fs.find(x => x.key === atual), prev = fs.filter(x => x.key < atual).slice(-3); if (!f || prev.length < 2) continue; const avg = prev.reduce((a, x) => a + x.total, 0) / prev.length; if (avg > 300 && f.total > avg * 1.4) out.push({p:2.4, icon:'card', hue:'red', t:`Fatura ${c.nome} já está ${Math.round((f.total / avg - 1) * 100)}% acima da média`, m:`${brl0(f.total)} até agora, contra ${brl0(avg)} nas últimas faturas.`, go:'dinheiro:cartoes'}); }
+  metaAlerts().forEach(({g, r}) => out.push({p:2.7, icon:'target', hue:'orange', t:`Meta “${g.nome}” fora do ritmo`, m:`Deveria ter ≈ ${brl0(r.esp)} e tem ${brl0(g.acumulado)}. Para chegar no prazo: ${brl0(r.comRend)}/mês investindo a 100% do CDI.`, go:'patrimonio:metas'}));
+  diversAlerts().forEach(a => out.push({p: a.bad ? 3.2 : 1, icon: a.bad ? 'alert' : 'globe', hue: a.bad ? 'red' : 'blue', t:a.t, m:a.m, go:'patrimonio:cart'}));
   return out.sort((a, b) => b.p - a.p);
 }
 const insRow = x => `<div class="item" role="button" tabindex="0" ${x.edit ? `data-edit="tx" data-id="${x.edit}"` : `data-goto="${x.go}"`} style="align-items:flex-start">${tile(x.icon, x.hue)}<div class="main"><div class="t">${esc(x.t)}</div><div class="m">${esc(x.m)}</div></div>${ic('chevron').replace('class="ic"', 'class="ic chev"')}</div>`;
@@ -4028,7 +4075,7 @@ const recTxId = (r, m) => `rx_${r.id}_${m}`;
 function recOcc(r, m, pago){
   const [y, mm] = m.split('-').map(Number), last = new Date(y, mm, 0).getDate(), data = `${m}-${String(Math.min(+r.dia || 1, last)).padStart(2, '0')}`;
   const card = r.cartao ? get(r.cartao) : null;
-  const tx = {id:recTxId(r, m), kind:'tx', tipo:r.tipo, valor:CALC.r2(r.valor), desc:r.desc, cat:r.cat, conta: card ? '' : (r.conta || ''), cartao: card ? card.id : '', pag: card ? 'Crédito' : (r.pag || 'Pix'), data, pago: card ? true : !!pago, fatura: card ? CALC.faturaOf(card, data).key : '', rec:r.id, parc:'fixo'};
+  const tx = {id:recTxId(r, m), kind:'tx', tipo:r.tipo, valor:CALC.r2(r.valor), desc:r.desc, cat:r.cat, sub:r.sub || '', conta: card ? '' : (r.conta || ''), cartao: card ? card.id : '', pag: card ? 'Crédito' : (r.pag || 'Pix'), data, pago: card ? true : !!pago, fatura: card ? CALC.faturaOf(card, data).key : '', rec:r.id, parc:'fixo'};
   if (r.div && r.div.pessoa && r.tipo === 'saida') tx.div = {pessoa:r.div.pessoa, pct:+r.div.pct || 50, valor:CALC.r2(r.valor * (+r.div.pct || 50) / 100), rec:false, recTx:'', recData:''};
   if (r.ex) tx.ex = true;
   return tx;
@@ -4110,6 +4157,343 @@ function recSection(){
     </section>`;
 }
 
+/* ===================== v10: PAINEL, SIMULAÇÕES, INVESTIMENTOS PRO, CONTROLES ===================== */
+Object.assign(IC, {
+  cartq:'<path d="M3 4h2l2.4 11h10.2L20 7H6.2"/><circle cx="9.5" cy="19" r="1.4"/><circle cx="16.5" cy="19" r="1.4"/>',
+  globe:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/>',
+  history:'<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3 4v4h4"/><path d="M12 8v4.5l3 2"/>',
+  filter:'<path d="M4 5h16l-6 7.5V19l-4 1.5v-8z"/>'
+});
+function invAtivos(){ return all('inv').filter(i => !i.encerrado); }
+
+/* ---------- 1. Três saldos ---------- */
+function saldos3(){
+  const t = today(), P = patrimonio(), C = FIN.compromissos(TX(), all('cartao'), t, addDays(t, 30)), A = flowAvgs();
+  const livre = P.contas + C.totReceber - C.totPagar, fimMes = flowProj(1).rows[0].saldo, invest = Math.max(0, livre - A.out);
+  return {real:P.contas, livre, fimMes, invest, colchao:A.out, C};
+}
+
+/* ---------- 2. Posso comprar? ---------- */
+function compraTxs(v, real = false){
+  const n = Math.max(1, Math.floor(+v.parcelas || 1)), onde = String(v.onde || ''), conta = onde.startsWith('c:') ? onde.slice(2) : '', cartao = onde.startsWith('k:') ? onde.slice(2) : '', card = cartao ? get(cartao) : null, grupo = uid('g');
+  const vals = n > 1 ? CALC.split(+v.valor || 0, n) : [CALC.r2(+v.valor || 0)], d0 = v.data || today();
+  return vals.map((pv, i) => { const d = addMonths(d0, i); return {id:uid('tx'), kind:'tx', tipo:'saida', valor:pv, desc:v.desc || 'Compra', cat:v.cat || 'Compras pessoais', data:d, conta, cartao, pag: card ? 'Crédito' : 'Pix', pago: card ? true : (real && d <= today()), fatura: card ? CALC.faturaOf(card, d).key : '', ...(n > 1 ? {parc:`${i + 1}/${n}`, grupo} : {})}; });
+}
+function formCompra(){
+  const s = settings();
+  const fields = [{k:'valor', label:'Valor total (R$)', type:'number'}, {k:'parcelas', label:'Parcelas', type:'number', def:1}, {k:'desc', label:'O que é', full:true, ph:'Ex.: Notebook'}, {k:'cat', label:'Categoria', type:'select', options:s.catsOut || DEF_OUT, def:'Compras pessoais'}, {k:'data', label:'Quando', type:'date', def:today()}, {k:'onde', label:'Pagar com', type:'select', options:ondeOpts()}];
+  openSheet({title:'Posso comprar?', fields, saveLabel:'Lançar a compra', extra:'<div id="cmp-res" style="margin-top:12px"></div>',
+    onInput: v => {
+      const el = $('#cmp-res'); if (!el) return; if (!(+v.valor > 0)){ el.innerHTML = '<p class="note">Informe o valor para ver o impacto nos próximos meses.</p>'; return; }
+      const ex = compraTxs(v), base = flowProj(12).rows, com = flowProj(12, ex).rows, minB = Math.min(...com.map(r => r.saldo)), neg = com.find(r => r.saldo < 0);
+      const card = String(v.onde).startsWith('k:') ? get(String(v.onde).slice(2)) : null, disp = card ? FIN.limiteDisp(card, TX()) : null, semLim = card && +v.valor > disp;
+      const verd = semLim ? ['bad', `Limite insuficiente: o ${esc(card.nome)} tem ${brl(disp)} disponíveis.`] : neg ? ['bad', `Não recomendo agora: em ${monthName(neg.m).toLowerCase()} o saldo previsto fica em ${brl0(neg.saldo)}.${coberturaHtml(Math.ceil(-neg.saldo / 100) * 100, neg.m + '-01')}`] : minB < flowAvgs().out ? ['warn', `Cabe, mas aperta: o menor saldo previsto fica em ${brl0(minB)}, menos que um mês de gastos do dia a dia.`] : ['good', `Cabe no orçamento: o menor saldo previsto continua em ${brl0(minB)}.`];
+      el.innerHTML = `<div class="banner ${verd[0] === 'good' ? '' : 'warn'}" style="${verd[0] === 'good' ? 'background:color-mix(in srgb,var(--pos) 12%,var(--card));border-color:color-mix(in srgb,var(--pos) 25%,transparent)' : ''}">${ic(verd[0] === 'good' ? 'check' : 'alert')}<span>${verd[1]}</span></div>
+        <table class="mini" style="margin-top:8px"><tr><td class="muted">Mês</td><td class="muted">sem → com a compra</td></tr>${com.map((r, i) => Math.abs(r.saldo - base[i].saldo) < 0.5 && i > 2 ? '' : `<tr><td>${cap(monthShort(r.m))}</td><td>${brl0(base[i].saldo)} → <b class="${r.saldo < 0 ? 'neg' : ''}">${brl0(r.saldo)}</b></td></tr>`).join('')}</table>
+        <p class="foot">Projeção do saldo das contas no fim de cada mês (estimativa), com faturas, fixos, parcelas e a média de gastos do dia a dia.</p>`;
+    },
+    onSave: v => { if (!(+v.valor > 0)) return 'Informe o valor.'; const card = String(v.onde).startsWith('k:') ? get(String(v.onde).slice(2)) : null; if (card && +v.valor > FIN.limiteDisp(card, TX())) return 'Limite insuficiente neste cartão.'; putMany(compraTxs(v, true)); toast('Compra lançada'); }});
+}
+
+/* ---------- 3. Fluxo diário ---------- */
+function dailyProj(n = 31){
+  const t = today(), txs = TX(), A = flowAvgs(), out = [], fats = all('cartao').flatMap(c => FIN.faturasDoCartao(c, txs).filter(f => f.pend > 0));
+  let saldo = contasSaldo();
+  for (let i = 0; i < n; i++){
+    const d = addDays(t, i), hit = x => i === 0 ? x <= d : x === d; let mov = 0; const ev = [];
+    for (const x of txs){ if (x.pago || x.cartao || !hit(x.data)) continue; if (x.tipo === 'entrada' || x.invMov === 'resgate'){ mov += +x.valor; ev.push('+' + (x.desc || x.cat)); } else if (x.tipo === 'saida' || x.invMov === 'aporte'){ mov -= +x.valor; ev.push('−' + (x.desc || x.cat)); } }
+    for (const f of fats) if (hit(f.due)){ mov -= f.pend; ev.push('fatura'); }
+    for (const dv of all('divida')) if (dv.status !== 'quitada' && +dv.parcela && dv.proxVenc && hit(dv.proxVenc)){ mov -= +dv.parcela; ev.push(dv.desc); }
+    if (FLX.out) mov -= A.out / 30;
+    saldo += mov; out.push({d, saldo, ev});
+  }
+  return out;
+}
+function dailyCard(){
+  const ds = dailyProj(), min = ds.reduce((a, x) => x.saldo < a.saldo ? x : a, ds[0]);
+  return `<section class="card"><div class="card-head"><h3>Próximos 30 dias, dia a dia</h3><span class="label">estimativa</span></div>
+    ${lineSvg(ds.map(x => x.saldo), ds.map(x => String(+x.d.slice(8))), {aria:'Saldo previsto por dia', h:160})}
+    <div class="callout" style="margin-top:8px">Dia mais apertado: <b>${dayLabel(min.d)}</b>, com saldo previsto de <b class="${min.saldo < 0 ? 'neg' : ''}">${brl(min.saldo)}</b>${min.saldo < 0 ? '. Antecipe uma receita ou mude a data de algum pagamento.' : '.'}</div></section>`;
+}
+
+/* ---------- 4. Evolução do patrimônio ---------- */
+let SNAP_DAY = '';
+async function snapNow(){
+  if (!S.key) return; SNAP_DAY = today();
+  const P = patrimonio(), id = 'snap_' + ym(today()), cur = get(id), r = v => Math.round(v);
+  const nv = {contas:r(P.contas), inv:r(P.inv), faturas:r(P.faturas), dividas:r(P.dividas), liquido:r(P.liquido), pts:r(P.pts)};
+  if (cur && Object.keys(nv).every(k => cur[k] === nv[k])) return;
+  if (![...S.items.values()].some(i => ['tx','inv','conta'].includes(i.kind))) return;
+  await put({id, kind:'snap', m:ym(today()), ...nv});
+}
+function evolSeries(n = 12){
+  const s = settings(), txs = TX(), out = [], cur = ym(today());
+  for (let i = n - 1; i >= 0; i--){
+    const m = mAdd(cur, -i), snap = get('snap_' + m);
+    if (snap){ out.push({m, ...snap, est:false}); continue; }
+    const fim = i === 0 ? today() : `${m}-${String(daysInMonth(m)).padStart(2, '0')}`;
+    const cs = all('conta').filter(c => !c.dataIni || c.dataIni <= fim), contas = cs.reduce((a, c) => a + FIN.contaSaldo(c, txs.filter(t => t.data <= fim)), 0);
+    const inv = all('inv').filter(x => x.inicio && x.inicio <= fim && !(x.encerrado && (x.encData || '') <= fim)).reduce((a, x) => a + CALC.evaluate(x, s, fim).liq, 0);
+    if (!cs.length || cs.length < all('conta').filter(c => c.ativo !== false).length){ out.push({m, liquido:null}); continue; }
+    let faturas = 0;
+    for (const c of all('cartao')) for (const f of FIN.faturasDoCartao(c, txs)){ if (f.due <= fim) continue; let tot = 0; for (const x of txs){ if (x.cartao !== c.id || x.fatura !== f.key || x.data > fim) continue; if (x.tipo === 'saida') tot += +x.valor; else if (x.tipo === 'entrada') tot -= +x.valor; else if (x.tipo === 'pagfatura') tot -= +x.valor; } faturas += Math.max(0, tot); }
+    const dividas = all('divida').filter(d => d.status !== 'quitada').reduce((a, d) => a + (+d.saldo || 0), 0);
+    out.push({m, contas, inv, faturas, dividas, liquido:contas + inv - faturas - dividas, est:true});
+  }
+  return out;
+}
+function patEvol(){
+  const ev = evolSeries(12), ok = ev.filter(x => x.liquido != null), first = ok[0], last = ok[ok.length - 1];
+  if (ok.length < 2) return `<section class="card">${emptyBox('trend','green','A Caderneta guarda uma foto do seu patrimônio todo mês. Em pouco tempo o gráfico de evolução aparece aqui.')}</section>`;
+  const g = last.liquido - first.liquido;
+  return `<div class="kpis kpis4">${kpi('pie','indigo','Patrimônio hoje', brl0(last.liquido), 'contas + investimentos − dívidas')}${kpi('trend', g >= 0 ? 'green' : 'red', `Em ${ok.length - 1} meses`, (g >= 0 ? '+' : '') + brl0(g), first.liquido ? pct(Math.round(g / Math.abs(first.liquido) * 1000) / 10) : '—', '', g < 0 ? 'neg' : '')}${kpi('bank','blue','Em contas', brl0(last.contas), 'saldo real')}${kpi('coins','green','Investido', brl0(last.inv), 'líquido estimado')}</div>
+    <section class="card"><div class="card-head"><h3>Evolução</h3><span class="label">patrimônio líquido no fim de cada mês</span></div>${lineSvg(ok.map(x => x.liquido), ok.map(x => cap(MES[+x.m.slice(5) - 1])), {aria:'Evolução do patrimônio'})}</section>
+    <section class="card"><div class="card-head"><h3>Mês a mês</h3></div><table class="mini">${ok.slice().reverse().map((x, i, arr) => { const prev = arr[i + 1]; return `<tr><td>${cap(monthName(x.m))}${x.est ? ' <span class="chip">reconstruído</span>' : ''}<br><span class="small muted">contas ${brl0(x.contas)} · investido ${brl0(x.inv)}${x.dividas ? ' · dívidas ' + brl0(x.dividas) : ''}</span></td><td>${brl0(x.liquido)}${prev ? `<br><span class="small ${x.liquido - prev.liquido >= 0 ? 'pos' : 'neg'}">${x.liquido - prev.liquido >= 0 ? '+' : ''}${brl0(x.liquido - prev.liquido)}</span>` : ''}</td></tr>`; }).join('')}</table>
+      <p class="foot">A partir de agora a foto de cada mês fica guardada. Meses anteriores marcados como “reconstruído” foram estimados pelos lançamentos, faturas e investimentos da época (as dívidas usam o saldo atual).</p></section>`;
+}
+
+/* ---------- 6. Histórico do investimento (aportes, resgates, proventos, saldos) ---------- */
+const INVMOV = {aporte:['Aporte','plus','green'], resgate:['Resgate','undo','orange'], provento:['Provento ou rendimento','coins','teal'], saldo:['Atualização de saldo','history','blue']};
+function invHistHtml(i){
+  const h = (i.hist || []).slice().sort((a, b) => a.d < b.d ? 1 : -1), prov = h.filter(x => x.tipo === 'provento').reduce((a, x) => a + (+x.v || 0), 0);
+  return `<div style="margin-top:14px"><div class="between"><h3 style="margin:0">Histórico</h3>${prov ? `<span class="label">proventos ${brl(prov)}</span>` : ''}</div>
+    <div class="actions" style="margin:8px 0">${Object.entries(INVMOV).map(([k, [l, icn]]) => `<button class="btn sm" data-invmov="${k}">${ic(icn)}${l.split(' ')[0]}</button>`).join('')}</div>
+    ${h.length ? `<div class="list">${h.map(x => `<div class="item">${tile(INVMOV[x.tipo][1], INVMOV[x.tipo][2])}<div class="main"><div class="t">${INVMOV[x.tipo][0]}</div><div class="m">${fmtD(x.d)}${x.obs ? ' · ' + esc(x.obs) : ''}</div></div><div class="amt">${x.tipo === 'saldo' && x.vm != null && i.moeda && i.moeda !== 'BRL' ? `${esc(i.moeda)} ${fmtQ(x.vm)}` : brl(x.v)}</div></div>`).join('')}</div>` : '<p class="small muted" style="margin:4px 0">Registre aportes, resgates, dividendos e cada saldo do extrato: o histórico fica guardado, nada é sobrescrito.</p>'}</div>`;
+}
+function formInvMov(i, tipo, pre = {}){
+  const s = settings(), r = CALC.evaluate(i, s, today()), fx = i.moeda && i.moeda !== 'BRL', fxr = r.fxr || 1;
+  const fields = tipo === 'saldo'
+    ? [{k:'vm', label: fx ? `Saldo atual (${i.moeda})` : 'Saldo atual (R$)', type:'number', def: CALC.r2(fx ? r.bm : r.bruto)}, ...(+i.qtd ? [{k:'qtd', label:'Quantidade', type:'number', def:i.qtd}, {k:'preco', label:`Preço atual (${i.moeda || 'R$'})`, type:'number', def:i.precoAtual}] : []), {k:'d', label:'Data', type:'date', def:today()}]
+    : [{k:'v', label:'Valor (R$)', type:'number', def:pre.v, hint: tipo === 'resgate' ? `Hoje ≈ ${brl(r.bruto)} bruto · ${invLiq(i).txt}` : ''}, ...(tipo === 'aporte' && +i.qtd ? [{k:'q', label:'Quantidade comprada', type:'number'}] : []), {k:'d', label:'Data', type:'date', def:pre.d || today()}, {k:'conta', label: tipo === 'aporte' ? 'Saiu da conta' : 'Entrou na conta', type:'select', options:[['', 'Não registrar na conta'], ...contaOpts()], def:pre.conta}, {k:'obs', label:'Observação', full:true}];
+  openSheet({title:`${INVMOV[tipo][0]} · ${i.nome}`, fields, saveLabel:'Registrar',
+    extra: tipo === 'provento' ? '<p class="note">Dividendos, juros e cupons recebidos. Na conta escolhida, entra como receita (Rendimentos).</p>' : tipo === 'resgate' ? '<p class="note">O valor sai do investimento e entra na conta, sem contar como receita. Resgatou tudo? Informe o valor total: o investimento é encerrado e fica no histórico. <b>Data futura = resgate programado</b>, confirmado no dia.</p>' : tipo === 'aporte' ? '<p class="note">O valor sai da conta e entra no investimento, sem contar como despesa. <b>Data futura = aporte programado</b>: não mexe no saldo até você confirmar no dia (aparece em A pagar e no Fluxo).</p>' : '<p class="note">O saldo fica guardado no histórico e a estimativa recomeça a partir dele.</p>',
+    onSave: v => {
+      const it = {...get(i.id)}, h = [...(it.hist || [])], list = [], d = v.d || today(), cur = CALC.evaluate(it, s, d), fr = cur.fxr || 1;
+      if (tipo === 'saldo'){
+        if (+v.qtd && +v.preco){ it.qtd = +v.qtd; it.precoAtual = +v.preco; }
+        else { if (!(+v.vm >= 0)) return 'Informe o saldo.'; it.saldoReal = +v.vm; it.dataSaldo = d; if (+it.qtd && +it.precoAtual) it.precoAtual = +v.vm / +it.qtd; }
+        h.push({id:uid('h'), d, tipo, v:CALC.r2((+v.qtd && +v.preco ? +v.qtd * +v.preco : +v.vm) * fr), vm: fx ? (+v.qtd && +v.preco ? +v.qtd * +v.preco : +v.vm) : null});
+      } else {
+        if (!(+v.v > 0)) return 'Informe o valor.';
+        const val = +v.v;
+        if ((tipo === 'aporte' || tipo === 'resgate') && d > today()){
+          if (!v.conta) return 'Para programar, escolha a conta.';
+          if (tipo === 'aporte'){ const prev = contaPrevista(v.conta, d); if (prev < val && !SHEET.warned){ SHEET.warned = true; return `Saldo previsto em ${get(v.conta)?.nome} no dia ${fmtD(d)}: ${brl(prev)}. Programe para depois de o dinheiro cair ou toque em Registrar de novo para manter.`; } }
+          putMany([progInvTx(it, tipo, val, d, v.conta, v.q)]); toast(`${INVMOV[tipo][0]} programado para ${fmtD(d)}`); setTimeout(() => formInv(get(i.id)), 80); return;
+        }
+        if (tipo === 'aporte' && v.conta && !SHEET.warned){ const sal = FIN.contaSaldo(get(v.conta), TX()); if (sal < val){ SHEET.warned = true; return `${get(v.conta)?.nome} tem ${brl(sal)} hoje. Se o dinheiro ainda vai cair, escolha a data em que ele cai para programar. Toque em Registrar de novo para manter.`; } }
+        if (tipo === 'aporte'){
+          const baseM = fx ? cur.bm : cur.bruto; it.aplicado = CALC.r2((+it.aplicado || 0) + val); if (fx) it.aplicadoMoeda = CALC.r2((+it.aplicadoMoeda || 0) + val / fr);
+          if (+it.qtd && +it.precoAtual) it.qtd = +it.qtd + (+v.q || val / (+it.precoAtual * fr)); else if (it.saldoReal || it.idx === 'manual') { it.saldoReal = CALC.r2(baseM + val / fr); it.dataSaldo = d; }
+          if (v.conta) list.push({id:uid('tx'), kind:'tx', tipo:'transf', valor:CALC.r2(val), desc:`Aporte: ${it.nome}`, data:d, conta:v.conta, contaDest:'', invNome:it.nome, pago:true, cartao:'', fatura:''});
+        } else if (tipo === 'resgate'){
+          const fr2 = Math.min(1, val / Math.max(1e-9, cur.bruto));
+          if (fr2 >= .995){ it.encerrado = true; it.encData = d; }
+          else { it.aplicado = CALC.r2((+it.aplicado || 0) * (1 - fr2)); if (it.aplicadoMoeda) it.aplicadoMoeda = CALC.r2(it.aplicadoMoeda * (1 - fr2)); if (+it.qtd) it.qtd = +it.qtd * (1 - fr2); else if (it.saldoReal || it.idx === 'manual'){ it.saldoReal = CALC.r2((fx ? cur.bm : cur.bruto) * (1 - fr2)); it.dataSaldo = d; } }
+          if (v.conta) list.push({id:uid('tx'), kind:'tx', tipo:'transf', valor:CALC.r2(val), desc:`Resgate: ${it.nome}`, data:d, conta:'', contaDest:v.conta, invNome:it.nome, pago:true, cartao:'', fatura:''});
+        } else if (tipo === 'provento'){
+          if (v.conta) list.push({id:uid('tx'), kind:'tx', tipo:'entrada', valor:CALC.r2(val), desc:`Rendimento: ${it.nome}`, cat:'Rendimentos', data:d, conta:v.conta, cartao:'', pago:true, pag:'Transferência'});
+        }
+        h.push({id:uid('h'), d, tipo, v:CALC.r2(val), obs:v.obs || ''});
+      }
+      it.hist = h; putMany([it, ...list]); toast(INVMOV[tipo][0] + ' registrado'); setTimeout(() => formInv(get(i.id)), 80);
+    }});
+}
+
+/* ---------- 8. Diversificação ---------- */
+function divers(){
+  const s = settings(), t = today(), g = {inst:{}, pais:{}, moeda:{}}; let total = 0;
+  const add = (inst, pais, moeda, v) => { if (!(v > 0)) return; total += v; g.inst[inst] = (g.inst[inst] || 0) + v; g.pais[pais] = (g.pais[pais] || 0) + v; g.moeda[moeda] = (g.moeda[moeda] || 0) + v; };
+  for (const c of all('conta').filter(c => c.ativo !== false)) add(c.inst || c.nome, 'Brasil', 'BRL', FIN.contaSaldo(c, TX()));
+  for (const i of invAtivos()) add(i.custodia || i.inst || 'Sem instituição', i.pais || (i.moeda && i.moeda !== 'BRL' ? 'Exterior' : 'Brasil'), i.moeda || 'BRL', CALC.evaluate(i, s, t).liq);
+  const fgc = {}; for (const i of invAtivos().filter(i => FGC_TYPES.includes(i.tipo) && (!i.moeda || i.moeda === 'BRL'))) fgc[i.inst || '—'] = (fgc[i.inst || '—'] || 0) + CALC.evaluate(i, s, t).bruto;
+  return {...g, total, fgc};
+}
+function diversAlerts(D = divers()){
+  const out = [];
+  if (D.total < 5000) return out;
+  const top = Object.entries(D.inst).sort((a, b) => b[1] - a[1])[0];
+  if (top && top[1] / D.total > .5 && D.total > 20000) out.push({t:`${Math.round(top[1] / D.total * 100)}% do patrimônio em ${top[0]}`, m:'Concentração alta numa só instituição. Se ela tiver problemas, boa parte do seu dinheiro fica presa.', bad:top[1] / D.total > .7});
+  Object.entries(D.fgc).filter(([, v]) => v > 250000).forEach(([k, v]) => out.push({t:`${brl0(v)} em ${k}: acima da garantia do FGC`, m:'O FGC cobre até R$ 250 mil por CPF por instituição. O que passar disso não tem garantia.', bad:true}));
+  if ((D.pais['Brasil'] || 0) / D.total > .999 && D.total > 50000) out.push({t:'100% do patrimônio no Brasil e em reais', m:'Não é um problema em si, mas todo o risco fica concentrado num país e numa moeda. Se fizer sentido para você, uma parte em dólar ajuda a diversificar.', bad:false});
+  return out;
+}
+const DIV_HUES = ['--h-green','--h-indigo','--h-blue','--h-orange','--h-purple','--h-teal','--h-pink','--h-yellow'];
+function diversCard(){
+  const D = divers(); if (!D.total) return '';
+  const bar = (o, lab) => { const es = Object.entries(o).sort((a, b) => b[1] - a[1]); return `<div style="margin-top:10px"><div class="label">${lab}</div><div class="stacked">${es.map(([k, v], j) => `<i style="width:${v / D.total * 100}%;background:var(${DIV_HUES[j % DIV_HUES.length]})" title="${esc(k)}"></i>`).join('')}</div><div class="actions" style="gap:4px 12px">${es.slice(0, 6).map(([k, v], j) => `<span class="legend small"><i style="background:var(${DIV_HUES[j % DIV_HUES.length]})"></i>${esc(k)} ${Math.round(v / D.total * 100)}%</span>`).join('')}</div></div>`; };
+  const al = diversAlerts(D);
+  return `<section class="card"><div class="card-head"><h3>Diversificação</h3><span class="label">contas + investimentos · ${brl0(D.total)}</span></div>${bar(D.inst, 'Por instituição')}${bar(D.pais, 'Por país')}${bar(D.moeda, 'Por moeda')}
+    ${al.length ? `<div class="list" style="margin-top:8px">${al.map(a => `<div class="item">${tile(a.bad ? 'alert' : 'globe', a.bad ? 'red' : 'blue')}<div class="main"><div class="t">${esc(a.t)}</div><div class="m">${esc(a.m)}</div></div></div>`).join('')}</div>` : ''}</section>`;
+}
+
+/* ---------- 9. Simulador com aportes ---------- */
+const SIM2 = {ini:10000, ap:1000, tx:12, per:'aa', meses:120, inf:4.5, ir:true};
+function sim2Calc(tx){
+  const rm = SIM2.per === 'am' ? tx / 100 : Math.pow(1 + tx / 100, 1 / 12) - 1, n = Math.max(1, Math.round(+SIM2.meses || 1)), serie = [];
+  let B = +SIM2.ini || 0; serie.push(B);
+  for (let k = 1; k <= n; k++){ B = B * (1 + rm) + (+SIM2.ap || 0); serie.push(B); }
+  const inv = (+SIM2.ini || 0) + (+SIM2.ap || 0) * n, rend = B - inv, ir = SIM2.ir && rend > 0 ? rend * CALC.irRate(n * 30.4) : 0, liq = B - ir, real = liq / Math.pow(1 + (+SIM2.inf || 0) / 100, n / 12);
+  return {B, inv, rend, ir, liq, real, serie, n};
+}
+function sim2Html(){
+  const base = sim2Calc(+SIM2.tx || 0), cen = [['Otimista', (+SIM2.tx || 0) * 1.2], ['Base', +SIM2.tx || 0], ['Desfavorável', (+SIM2.tx || 0) * .7]].map(([l, x]) => ({l, x, r:sim2Calc(x)}));
+  const step = Math.max(1, Math.ceil(base.n / 24)), pts = base.serie.filter((_, k) => k % step === 0 || k === base.n), labs = pts.map((_, j) => { const mm = Math.min(base.n, j * step); return mm % 12 === 0 ? `${mm / 12}a` : `${mm}m`; });
+  const f = (k, l, extra = '') => `<label class="f">${l}<input id="sim-${k}" type="number" inputmode="decimal" step="any" value="${esc(SIM2[k])}" ${extra}></label>`;
+  return `<div class="dash" style="margin-top:4px"><div class="col"><section class="card"><div class="card-head"><h3>Simular com aportes mensais</h3></div><div class="form">
+      ${f('ini', 'Valor inicial (R$)')}${f('ap', 'Aporte por mês (R$)')}${f('tx', 'Rendimento (%)')}
+      <label class="f">Periodicidade<select id="sim-per"><option value="aa" ${SIM2.per === 'aa' ? 'selected' : ''}>ao ano</option><option value="am" ${SIM2.per === 'am' ? 'selected' : ''}>ao mês</option></select></label>
+      ${f('meses', 'Prazo (meses)')}${f('inf', 'Inflação ao ano (%)')}
+      <label class="check full"><input id="sim-ir" type="checkbox" ${SIM2.ir ? 'checked' : ''}> Descontar IR no final (tabela regressiva)</label></div></section></div>
+    <div class="col"><section class="card hero"><div class="card-head"><span class="label">Projeção em ${base.n} meses · estimativa</span></div><div class="big">${money(base.liq)}</div>
+      <table class="mini" style="margin-top:8px"><tr><td>Você investe</td><td>${brl(base.inv)}</td></tr><tr><td>Rendimentos</td><td class="pos">+ ${brl(base.rend)}</td></tr><tr><td>IR estimado</td><td class="neg">− ${brl(base.ir)}</td></tr><tr><td>Em dinheiro de hoje (descontada a inflação)</td><td><b>${brl(base.real)}</b></td></tr></table>
+      ${lineSvg(pts, labs, {aria:'Evolução simulada', h:150})}</section>
+    <section class="card"><div class="card-head"><h3>Cenários</h3><span class="label">líquido · em dinheiro de hoje</span></div><table class="mini">${cen.map(c => `<tr><td>${c.l}<br><span class="small muted">${pct(Math.round(c.x * 100) / 100)} ${SIM2.per === 'am' ? 'a.m.' : 'a.a.'}</span></td><td>${brl0(c.r.liq)}<br><span class="small muted">${brl0(c.r.real)} hoje</span></td></tr>`).join('')}</table>
+      <p class="foot">Simulação, não promessa de retorno. Rendimentos passados não garantem os futuros. O IR usa a alíquota do prazo total (15% acima de 2 anos).</p></section></div></div>`;
+}
+
+/* ---------- 10. Metas com ritmo ---------- */
+const META_T = ['Reserva de emergência','Imóvel','Veículo','Viagem','Aposentadoria','Independência financeira','Patrimônio no exterior','Educação','Outro'];
+function metaRitmo(g){
+  if (!g.prazo || !g.alvo) return null;
+  const t = today(), ini = g.inicio || t, tot = CALC.days(ini, g.prazo), fr = tot > 0 ? clamp01(CALC.days(ini, t) / tot) : 1, esp = (+g.alvo) * fr, ac = +g.acumulado || 0;
+  const meses = Math.max(1, monthsBetween(ym(t), ym(g.prazo))), falta = Math.max(0, (+g.alvo) - ac), rm = Math.pow(1 + settings().cdi / 100 * .85, 1 / 12) - 1;
+  const pmtRend = falta > 0 ? (falta - ac * (Math.pow(1 + rm, meses) - 1)) * rm / (Math.pow(1 + rm, meses) - 1) : 0;
+  return {esp, atraso: fr > .05 && ac < esp * .9 && ac < +g.alvo, meses, semRend: falta / meses, comRend: Math.max(0, pmtRend)};
+}
+function metaAlerts(){ return all('meta').filter(g => g.status !== 'concluida').map(g => ({g, r:metaRitmo(g)})).filter(x => x.r?.atraso); }
+
+/* ---------- 12. Origem, histórico de alterações, backup ---------- */
+const origemTx = t => t.imp ? 'importado' : /notifica/i.test(t.obs || '') ? 'notificacao' : t.rec ? 'fixo' : isParc(t) ? 'parcela' : t.grupo ? 'repetido' : 'manual';
+const ORIG_L = {manual:'Manual', importado:'Importado', notificacao:'Notificação', fixo:'Fixo', parcela:'Parcela', repetido:'Repetido', previsto:'Previsto (estimado)'};
+const LOG_KINDS = new Set(['tx','inv','conta','cartao','rec','meta','divida','trip','tcost','pmov','prog','bud','fx','orc']);
+const KIND_L = {tx:'lançamento', inv:'investimento', conta:'conta', cartao:'cartão', rec:'fixo', meta:'meta', divida:'dívida', trip:'viagem', tcost:'gasto de viagem', pmov:'movimento de pontos', prog:'programa', bud:'limite', fx:'compra de moeda', orc:'orçamento de viagem'};
+function logEntries(list){
+  const out = [], cnt = {};
+  for (const it of list){
+    const prev = S.items.get(it.id), kind = it.kind === 'del' ? prev?.kind : it.kind;
+    if (!LOG_KINDS.has(kind)) continue;
+    if (String(it.id).startsWith('rx_') && it.kind !== 'del') continue;
+    const acao = it.kind === 'del' ? 'apagou' : prev ? 'alterou' : 'criou', ref = it.kind === 'del' ? prev : it;
+    if (acao === 'alterou'){ const a = {...prev, upd:0}, b = {...it, upd:0}; if (JSON.stringify(a) === JSON.stringify(b)) continue; }
+    const k = acao + '|' + kind; cnt[k] = (cnt[k] || 0) + 1;
+    out.push({t:Date.now(), a:acao, k:kind, d:String(ref?.desc || ref?.nome || ref?.destino || '').slice(0, 60), v: ref?.valor ?? ref?.aplicado ?? ref?.qtd ?? '', dt: ref?.data || ''});
+  }
+  if (out.length > 8) return Object.entries(cnt).map(([k, n]) => { const [a, kind] = k.split('|'); return {t:Date.now(), a, k:kind, d:`${n} ${KIND_L[kind] || kind}(s) de uma vez`, v:'', dt:''}; });
+  return out;
+}
+function formLog(){
+  const L = (get('auditlog')?.itens || []);
+  openSheet({title:'Histórico de alterações', fields:[], saveLabel:null, extra:`<p class="note" style="margin-top:0">As últimas 300 criações, alterações e exclusões, deste e dos outros aparelhos sincronizados.</p>${L.length ? `<div class="list">${L.slice(0, 150).map(x => `<div class="item">${tile(x.a === 'apagou' ? 'x' : x.a === 'criou' ? 'plus' : 'edit', x.a === 'apagou' ? 'red' : x.a === 'criou' ? 'green' : 'blue')}<div class="main"><div class="t">${cap(x.a)} ${esc(KIND_L[x.k] || x.k)}${x.d ? ': ' + esc(x.d) : ''}</div><div class="m">${new Date(x.t).toLocaleString('pt-BR', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'})}${x.dt ? ' · data ' + fmtD(x.dt) : ''}</div></div>${x.v !== '' && x.v != null ? `<div class="amt">${typeof x.v === 'number' && x.k !== 'pmov' ? brl(x.v) : esc(x.v)}</div>` : ''}</div>`).join('')}</div>` : '<div class="empty">Nada registrado ainda.</div>'}`});
+}
+const markBackup = () => lsSet('caderneta.lastbackup', String(Date.now()));
+function backupAlert(alerts){
+  const last = +(lsGet('caderneta.lastbackup') || lsGet('caderneta.lastsync') || 0), n = [...S.items.values()].filter(i => i.kind === 'tx').length;
+  if (n < 20) return; const dias = last ? Math.floor((Date.now() - last) / 864e5) : null;
+  if (dias === null || dias >= 30) alerts.push({d:5, html:`<div class="item">${tile('shield','blue')}<div class="main"><div class="t">Hora de fazer um backup</div><div class="m">${dias === null ? 'Nenhum backup feito neste aparelho ainda' : `Último há ${dias} dias`}. Leva 10 segundos e fica criptografado.</div></div><button class="btn sm pri" data-act="sync-export">Fazer</button></div>`});
+}
+
+/* ---------- 13. Filtros dos lançamentos ---------- */
+const FLT = {onde:'', cat:'', tipo:'', orig:''};
+const fltOn = () => !!(FLT.onde || FLT.cat || FLT.tipo || FLT.orig);
+function applyFlt(list){
+  return list.filter(t => (!FLT.onde || ('c:' + t.conta) === FLT.onde || ('k:' + t.cartao) === FLT.onde || ('c:' + t.contaDest) === FLT.onde) && (!FLT.cat || t.cat === FLT.cat) && (!FLT.tipo || t.tipo === FLT.tipo) && (!FLT.orig || (FLT.orig === 'previsto' ? (!t.pago && !t.cartao) : origemTx(t) === FLT.orig)));
+}
+function fltBar(){
+  const s = settings(), cats = [...new Set([...(s.catsOut || DEF_OUT), ...(s.catsIn || DEF_IN)])];
+  const sel = (id, cur, opts, ph) => `<select id="${id}" class="mini-sel" style="margin:0" aria-label="${ph}"><option value="">${ph}</option>${opts.map(([v, l]) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+  return `<div class="actions" style="gap:6px;align-items:center">${ic('filter').replace('class="ic"', 'class="ic" style="width:16px;height:16px;color:var(--muted)"')}
+    ${sel('flt-onde', FLT.onde, ondeOpts().filter(o => o[0]), 'Conta/cartão')}${sel('flt-cat', FLT.cat, cats.map(c => [c, c]), 'Categoria')}${sel('flt-tipo', FLT.tipo, [['saida','Gastos'],['entrada','Receitas'],['transf','Transferências'],['pagfatura','Pagamentos de fatura']], 'Tipo')}${sel('flt-orig', FLT.orig, Object.entries(ORIG_L), 'Origem')}
+    ${fltOn() ? `<button class="link" data-act="flt-clear">Limpar</button>` : ''}</div>`;
+}
+async function exportTxList(list, nome){
+  try { await loadLib('xlsx'); } catch(e){ toast('Não consegui carregar o gerador de planilha.'); return; }
+  const nm = id => get(id)?.nome || '', wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(list.map(x => ({Data:x.data, Tipo:{entrada:'Receita', saida:'Despesa', transf:'Transferência', pagfatura:'Pagamento de fatura', pagdiv:'Pagamento de dívida'}[x.tipo] || x.tipo, Descrição:x.desc || '', Categoria:x.cat || '', Subcategoria:x.sub || '', Valor:+x.valor || 0, Conta:nm(x.conta), Cartão:nm(x.cartao), Origem:ORIG_L[origemTx(x)], Situação: !x.pago && !x.cartao ? 'previsto' : 'confirmado'}))), 'Lançamentos');
+  if (await saveFile(nome, new Uint8Array(XLSX.write(wb, {bookType:'xlsx', type:'array'})), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')) toast('Planilha gerada');
+}
+
+/* ===================== v11: APORTES E RESGATES PROGRAMADOS ===================== */
+// Uma aplicação programada é uma transferência "prevista" entre a conta e o investimento (tipo transf, invMov).
+// Não conta como receita nem despesa e só mexe no saldo e no investimento quando você confirma.
+function contaPrevista(cid, d){
+  const c = get(cid); if (!c) return 0; const txs = TX(); let s = FIN.contaSaldo(c, txs);
+  for (const t of txs){
+    if (t.pago || t.cartao || t.data > d) continue; const v = +t.valor || 0;
+    if (t.tipo === 'entrada' && t.conta === cid) s += v;
+    else if ((t.tipo === 'saida' || t.tipo === 'pagdiv') && t.conta === cid) s -= v;
+    else if (t.tipo === 'transf'){ if (t.conta === cid) s -= v; if (t.contaDest === cid) s += v; }
+  }
+  for (const card of all('cartao').filter(k => k.conta === cid)) for (const f of FIN.faturasDoCartao(card, txs)) if (f.pend > 0 && f.due <= d) s -= f.pend;
+  return CALC.r2(s);
+}
+// Aplica o efeito de um aporte ou resgate no investimento (custo, quantidade, saldo) e registra no histórico.
+function applyInvMov(it, tipo, val, d, q){
+  const s = settings(), cur = CALC.evaluate(it, s, d), fx = it.moeda && it.moeda !== 'BRL', fr = cur.fxr || 1;
+  if (tipo === 'aporte'){
+    const baseM = fx ? cur.bm : cur.bruto; it.aplicado = CALC.r2((+it.aplicado || 0) + val); if (fx) it.aplicadoMoeda = CALC.r2((+it.aplicadoMoeda || 0) + val / fr);
+    if (+it.qtd && +it.precoAtual) it.qtd = +it.qtd + (+q || val / (+it.precoAtual * fr)); else if (it.saldoReal || it.idx === 'manual'){ it.saldoReal = CALC.r2(baseM + val / fr); it.dataSaldo = d; }
+  } else {
+    const fr2 = Math.min(1, val / Math.max(1e-9, cur.bruto));
+    if (fr2 >= .995){ it.encerrado = true; it.encData = d; }
+    else { it.aplicado = CALC.r2((+it.aplicado || 0) * (1 - fr2)); if (it.aplicadoMoeda) it.aplicadoMoeda = CALC.r2(it.aplicadoMoeda * (1 - fr2)); if (+it.qtd) it.qtd = +it.qtd * (1 - fr2); else if (it.saldoReal || it.idx === 'manual'){ it.saldoReal = CALC.r2((fx ? cur.bm : cur.bruto) * (1 - fr2)); it.dataSaldo = d; } }
+  }
+  it.hist = [...(it.hist || []), {id:uid('h'), d, tipo, v:CALC.r2(val), obs:''}];
+  return it;
+}
+function progInvTx(inv, tipo, val, d, conta, q){
+  return {id:uid('tx'), kind:'tx', tipo:'transf', valor:CALC.r2(val), desc:`${tipo === 'aporte' ? 'Aporte' : 'Resgate'} programado: ${inv.nome}`, data:d, conta: tipo === 'aporte' ? conta : '', contaDest: tipo === 'resgate' ? conta : '', invNome:inv.nome, invId:inv.id, invMov:tipo, invQ:+q || 0, pago:false, cartao:'', fatura:''};
+}
+function confirmInvMov(tx){
+  const t = get(tx?.id) || tx; if (!t || t.pago) return;
+  const it = get(t.invId); if (!it){ toast('Investimento não encontrado'); return; }
+  const d = t.data > today() ? today() : t.data, upd = applyInvMov({...it}, t.invMov, +t.valor, d, t.invQ);
+  putMany([upd, {...t, pago:true, data:d, desc:t.desc.replace(' programado', '')}]);
+  const cid = t.conta || t.contaDest, c = get(cid);
+  setTimeout(() => { const sal = c ? FIN.contaSaldo(c, TX()) : 0; toast(`${t.invMov === 'aporte' ? 'Aporte' : 'Resgate'} confirmado${c && sal < 0 ? `. Atenção: ${c.nome} ficou com ${brl(sal)}` : ''}`); }, 300);
+}
+function formInvProg(t){
+  const inv = get(t.invId), conta = get(t.conta || t.contaDest), ap = t.invMov === 'aporte';
+  UI.txEdit = t.id;
+  openSheet({title: t.pago ? (ap ? 'Aporte' : 'Resgate') : (ap ? 'Aporte programado' : 'Resgate programado'), fields: t.pago ? [] : [{k:'valor', label:'Valor (R$)', type:'number'}, {k:'data', label:'Data', type:'date'}], data:t, saveLabel: t.pago ? null : 'Salvar',
+    extra:`<div class="callout" style="margin-top:${t.pago ? 0 : 10}px">${ap ? `De <b>${esc(conta?.nome || 'conta')}</b> para <b>${esc(inv?.nome || t.invNome || 'investimento')}</b>` : `De <b>${esc(inv?.nome || t.invNome || 'investimento')}</b> para <b>${esc(conta?.nome || 'conta')}</b>`} · ${brl(t.valor)} · ${fmtD(t.data)}${t.pago ? '<br>Já confirmado.' : `<br>Ainda não mexe no saldo da conta nem no investimento. ${ap ? `Saldo previsto em ${esc(conta?.nome || '')} nesse dia: <b>${brl(contaPrevista(t.conta, t.data))}</b> (já contando este aporte).` : ''}`}</div>
+      ${t.pago ? '' : `<button class="btn pri full" style="margin-top:10px" data-act="inv-confirm">${ic('check')}Confirmar agora</button>`}`,
+    onDelete: () => del(t.id), deleteLabel: t.pago ? 'Apagar registro' : 'Cancelar programação',
+    onSave: v => { if (!(+v.valor > 0)) return 'Informe o valor.'; put({...get(t.id), valor:CALC.r2(v.valor), data:v.data}); }});
+}
+function formAplicarAgora(apl){
+  const inv = get(apl.invId); if (!inv) return;
+  openSheet({title:'Aplicar agora?', fields:[], saveLabel:'Confirmar aporte',
+    extra:`<p style="margin:0">Recebido! Quer passar <b>${brl(apl.valor)}</b> de ${esc(get(apl.conta)?.nome || 'conta')} para <b>${esc(inv.nome)}</b> agora?</p><p class="note">Se a transferência ainda não foi feita no banco, toque em Cancelar: o aporte continua programado em A pagar.</p>`,
+    onSave: () => { confirmInvMov(get(apl.id)); }});
+}
+
+/* ===================== v12: LIQUIDEZ DOS INVESTIMENTOS ===================== */
+// Quando o dinheiro de cada investimento pode sair: dias para cair na conta, ou a data em que destrava.
+function invLiq(i){
+  const t = today(), venc = i.venc && i.venc > t ? i.venc : null, lq = i.liquidez || '';
+  if (lq === 'Diária' || ['Tesouro Selic','Poupança','Conta em dólar/euro'].includes(i.tipo)) return {dias: i.tipo === 'Poupança' ? 0 : 1, txt: i.tipo === 'Poupança' ? 'resgate na hora' : ['ipca','pre'].includes(i.idx) ? 'resgate em 1 dia (preço oscila)' : 'resgate em 1 dia'};
+  if (lq === 'D+30') return {dias:30, txt:'resgate em 30 dias'};
+  if (lq === 'D+90') return {dias:90, txt:'resgate em 90 dias'};
+  if (i.idx === 'manual' && !['Previdência'].includes(i.tipo)) return {dias:2, txt:'venda em 2 dias (preço oscila)'};
+  if (lq === 'No vencimento' || (!lq && venc)) return venc ? {dias:CALC.days(t, venc), ate:venc, txt:`só em ${fmtD(venc)}`} : {dias:1, txt:'vencido: resgate em 1 dia'};
+  if (i.tipo === 'Previdência') return {dias:30, txt:'resgate com prazo do plano'};
+  return {dias:1, txt:'resgate em 1 dia'};
+}
+function liqResumo(){
+  const s = settings(), t = today(); let ja = 0, curto = 0, travado = 0; const fontes = [];
+  for (const i of invAtivos()){ const v = CALC.evaluate(i, s, t).liq, L = invLiq(i); if (L.dias <= 1){ ja += v; fontes.push({i, v}); } else if (L.dias <= 30) curto += v; else travado += v; }
+  return {ja, curto, travado, fontes:fontes.sort((a, b) => b.v - a.v)};
+}
+// Para um buraco no saldo: de qual investimento de liquidez diária dá para tirar.
+function coberturaHtml(falta, quando){
+  const L = liqResumo(); if (!(falta > 0)) return '';
+  const f = L.fontes.find(x => x.v >= falta) || L.fontes[0];
+  if (!f) return '<br>Você não tem investimentos com resgate rápido para cobrir.';
+  const d = quando && quando > today() ? quando : today();
+  return L.ja >= falta ? `<br>Dá para cobrir resgatando de <b>${esc(f.i.nome)}</b> (${esc(invLiq(f.i).txt)}). <button class="btn sm" style="margin-top:6px" data-progres="${f.i.id}|${CALC.r2(falta)}|${d}">Programar resgate de ${brl0(falta)}</button>` : `<br>Seus investimentos de resgate rápido somam ${brl0(L.ja)}, menos do que falta.`;
+}
+
 /* ===================== RENDER + EVENTOS ===================== */
 function render(){
   renderChrome();
@@ -4122,6 +4506,7 @@ function render(){
     $('#fab').hidden = true; return;
   }
   if (S.key && REC_DAY !== today()){ REC_DAY = today(); setTimeout(ensureRec, 400); }
+  if (S.key && SNAP_DAY !== today()){ SNAP_DAY = today(); setTimeout(snapNow, 2500); }
   const act = document.activeElement, actId = act?.id, selStart = act?.selectionStart;
   $('#view').innerHTML = {inicio:vInicio, dinheiro:vDinheiro, planejar:vPlanejar, patrimonio:vPatrimonio, pontos:vPontos, viagens:vViagens}[UI.tab]();
   if (document.getElementById('tripmap')) drawMap();
@@ -4143,7 +4528,7 @@ function fabAction(){
 $('#fab').addEventListener('click', fabAction);
 document.addEventListener('click', async e => {
   if (e.target.closest('a[href]')) return;
-  const el = e.target.closest('[data-tab],[data-goto],[data-act],[data-edit],[data-din],[data-pat],[data-trip],[data-close],[data-chkdel],[data-horiz],[data-payfat],[data-fat],[data-settle],[data-aporte],[data-paydiv],[data-mil],[data-ttab],[data-pend],[data-clube],[data-vrec],[data-addday],[data-impall],[data-vtab],[data-orc],[data-cen],[data-oitchk],[data-wprice],[data-credit],[data-camptr],[data-plan],[data-calday],[data-fh],[data-flx],[data-divrec],[data-divall],[data-divtrip],[data-vcs],[data-acerto],[data-acdel],[data-chkmodel],[data-cpflim],[data-ruledel],[data-irano],[data-rec],[data-mkrec]');
+  const el = e.target.closest('[data-tab],[data-goto],[data-act],[data-edit],[data-din],[data-pat],[data-trip],[data-close],[data-chkdel],[data-horiz],[data-payfat],[data-fat],[data-settle],[data-aporte],[data-paydiv],[data-mil],[data-ttab],[data-pend],[data-clube],[data-vrec],[data-addday],[data-impall],[data-vtab],[data-orc],[data-cen],[data-oitchk],[data-wprice],[data-credit],[data-camptr],[data-plan],[data-calday],[data-fh],[data-flx],[data-divrec],[data-divall],[data-divtrip],[data-vcs],[data-acerto],[data-acdel],[data-chkmodel],[data-cpflim],[data-ruledel],[data-irano],[data-rec],[data-mkrec],[data-invmov],[data-invconf],[data-progres]');
   if (!el) return;
   if (el.dataset.close !== undefined){ if (e.target === el || el.tagName === 'BUTTON') closeSheet(); return; }
   if (el.dataset.tab){ UI.tab = el.dataset.tab; if (UI.tab !== 'viagens'){ UI.tripId = null; UI.orcId = null; } render(); scrollTo(0,0); return; }
@@ -4160,6 +4545,7 @@ document.addEventListener('click', async e => {
   if (el.dataset.ruledel){ del(el.dataset.ruledel); setTimeout(formRules, 50); return; }
   if (el.dataset.irano){ UI.irAno = +el.dataset.irano; render(); return; }
   if (el.dataset.rec){ const r = get(el.dataset.rec); if (r) formRec(r); return; }
+  if (el.dataset.invmov){ const i = get(UI.invEdit); closeSheet(); if (i) formInvMov(i, el.dataset.invmov); return; }
   if (el.dataset.mkrec){ const tx = get(el.dataset.mkrec); if (!tx) return; if (tx.grupo && tx.parc === 'fixo') return fixoToRec(tx); const r = {id:uid('rec'), kind:'rec', tipo:tx.tipo, valor:CALC.r2(tx.valor), desc:tx.desc || tx.cat, cat:tx.cat, conta:tx.conta || '', cartao:tx.cartao || '', pag:tx.pag, dia:+tx.data.slice(8), inicio:addMonths(tx.data, 1), fim:'', ativo:true, skip:[]}; putMany([r, ...recBuild(r, false)]); toast('Virou fixo: lança todo mês a partir do próximo'); return; }
   if (el.dataset.divrec){ const x = divItems().find(i => i.id === el.dataset.divrec); if (x) formDivRec([x]); return; }
   if (el.dataset.divall){ return formDivRec(divPending().filter(i => norm(i.pessoa) === el.dataset.divall)); }
@@ -4170,7 +4556,9 @@ document.addEventListener('click', async e => {
   if (el.dataset.trip){ UI.tab = 'viagens'; UI.orcId = null; UI.tripId = el.dataset.trip; UI.ttab = 'resumo'; render(); scrollTo(0,0); return; }
   if (el.dataset.payfat){ e.stopPropagation(); const [cid, key] = el.dataset.payfat.split('|'); return formPayFatura(get(cid), key); }
   if (el.dataset.fat){ const [cid, key] = el.dataset.fat.split('|'); return showFatura(get(cid), key); }
-  if (el.dataset.settle){ const t = get(el.dataset.settle); if (t){ put({...t, pago:true, data: t.data > today() ? t.data : t.data}); toast(t.tipo==='entrada'?'Marcado como recebido':'Marcado como pago'); } return; }
+  if (el.dataset.progres){ const [id, v, d] = el.dataset.progres.split('|'), inv = get(id); closeSheet(); if (inv) formInvMov(inv, 'resgate', {v:+v, d, conta:contaOpts()[0]?.[0] || ''}); return; }
+  if (el.dataset.invconf){ const t = get(el.dataset.invconf); if (t) confirmInvMov(t); return; }
+  if (el.dataset.settle){ const t = get(el.dataset.settle); if (t){ put({...t, pago:true, data: t.data > today() ? t.data : t.data}); toast(t.tipo==='entrada'?'Marcado como recebido':'Marcado como pago'); const apl = t.aplicarTx && get(t.aplicarTx); if (apl && !apl.pago) setTimeout(() => formAplicarAgora(apl), 500); } return; }
   if (el.dataset.aporte){ return formAporte(get(el.dataset.aporte)); }
   if (el.dataset.paydiv){ return formPayDivida(get(el.dataset.paydiv)); }
   if (el.dataset.chkdel !== undefined){ e.preventDefault(); const tr = get(UI.tripId); const check = [...(tr.check||[])]; check.splice(+el.dataset.chkdel,1); put({...tr, check}); return; }
@@ -4216,6 +4604,11 @@ document.addEventListener('click', async e => {
   if (a === 'trip-pdf'){ const tr = get(UI.tripId); if (tr) printDoc(tripHtml(tr)); return; }
   if (a === 'trip-dl'){ const tr = get(UI.tripId); if (tr) downloadDoc(`roteiro-${norm(tr.destino).replace(/[^a-z0-9]+/g, '-').slice(0, 40)}.html`, `Roteiro ${tr.destino}`, tripHtml(tr)); return; }
   if (a === 'ir-print'){ const ano = UI.irAno || new Date().getFullYear() - 1; printDoc(irHtml(ano)); return; }
+  if (a === 'compra') return formCompra();
+  if (a === 'inv-confirm'){ const t = get(UI.txEdit); closeSheet(); if (t) confirmInvMov(t); return; }
+  if (a === 'log'){ closeSheet(); return formLog(); }
+  if (a === 'flt-clear'){ Object.keys(FLT).forEach(k => FLT[k] = ''); render(); return; }
+  if (a === 'export-lanc'){ const q = UI.q.trim().toLowerCase(); const list = applyFlt(q ? TX().filter(t => [t.desc, t.cat, t.sub, get(t.conta)?.nome, get(t.cartao)?.nome].join(' ').toLowerCase().includes(q)) : monthTx(UI.month)); return exportTxList(list.sort((x, y) => x.data < y.data ? -1 : 1), `lancamentos-${q ? 'busca' : UI.month}.xlsx`); }
   if (a === 'add-fixo'){ formTx(); setTimeout(() => { const c = $('#f-fixo'); if (c){ c.checked = true; c.dispatchEvent(new Event('change', {bubbles:true})); } }, 0); return; }
   if (a === 'rec-skip'){ const t = get(UI.txEdit); closeSheet(); if (t) recSkip(t); return; }
   if (a === 'rec-edit'){ const t = get(UI.txEdit), r = t && get(t.rec); closeSheet(); if (r) formRec(r); return; }
@@ -4256,10 +4649,15 @@ document.addEventListener('change', e => {
   if (e.target.id === 'conc-file'){ concRun(e.target.files?.[0]); e.target.value = ''; }
   if (e.target.id === 'apo-ir'){ APO = {...aposP(), ir:e.target.checked}; render(); clearTimeout(apoSaveT); apoSaveT = setTimeout(() => put({...(get('settings')||{}), id:'settings', kind:'settings', apos:APO}), 1200); }
   if (e.target.id === 'sim-isento'){ SIM.isento = e.target.checked; render(); }
+  if (e.target.id === 'sim-per'){ SIM2.per = e.target.value; render(); }
+  if (e.target.id === 'sim-ir'){ SIM2.ir = e.target.checked; render(); }
+  if (e.target.id && e.target.id.startsWith('flt-')){ FLT[e.target.id.slice(4)] = e.target.value; render(); }
   if (e.target.id === 'sim-idx'){ SIM.idx = e.target.value; SIM.taxa = {cdi:110, pre:13.5, ipca:7, selic:0.05}[SIM.idx]; render(); }
 });
 let simT, qT;
 document.addEventListener('input', e => {
+  const m2 = {'sim-ini':'ini','sim-ap':'ap','sim-tx':'tx','sim-meses':'meses','sim-inf':'inf'}[e.target.id];
+  if (m2){ SIM2[m2] = +e.target.value; clearTimeout(simT); simT = setTimeout(render, 450); }
   const m = {'sim-valor':'valor','sim-dias':'dias','sim-taxa':'taxa'}[e.target.id];
   if (m){ SIM[m] = +e.target.value; clearTimeout(simT); simT = setTimeout(render, 400); }
   if (e.target.id && e.target.id.startsWith('calc-')){ const k = e.target.id.slice(5); CALCS[k] = e.target.tagName === 'SELECT' ? e.target.value : (e.target.value === '' ? '' : +e.target.value); clearTimeout(simT); simT = setTimeout(render, 450); }
