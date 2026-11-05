@@ -1317,8 +1317,26 @@ function showFatura(card, key){
   openSheet({title:`Fatura ${card.nome} · ${monthShort(key)}`, fields:[], saveLabel: f.pend>0 ? 'Pagar fatura' : 'Fechar',
     extra:`<div class="stack" style="gap:8px"><div class="between"><span class="chip ${FST[st][1]}">${FST[st][0]}</span><span class="note">fecha ${fmtD(f.close)} · vence ${fmtD(f.due)}</span></div>
       <table class="mini"><tr><td>Total</td><td>${brl(f.total)}</td></tr><tr><td>Pago</td><td>${brl(f.pago)}</td></tr><tr><td><b>Pendente</b></td><td><b>${brl(f.pend)}</b></td></tr></table>
-      <div class="list">${items.map(txRow).join('') || '<div class="note">Sem lançamentos.</div>'}</div></div>`,
+      <div class="list">${items.map(txRow).join('') || '<div class="note">Sem lançamentos.</div>'}</div>
+      ${f.pend > 0 ? `<button class="btn full" data-fatquit="${card.id}|${key}">${ic('check')}Já estava paga (não mexer no saldo da conta)</button>` : ''}
+      ${items.length ? `<button class="btn full danger" data-fatdel="${card.id}|${key}">${ic('x')}Apagar esta fatura</button>` : ''}</div>`,
     onSave: () => { if (f.pend > 0) setTimeout(() => formPayFatura(card, key), 0); }});
+}
+// Apaga só os lançamentos desta fatura: as parcelas dos outros meses e as próximas faturas ficam como estão.
+function delFatura(card, key, comPag){
+  const its = TX().filter(t => t.cartao === card.id && t.fatura === key && (comPag || t.tipo !== 'pagfatura'));
+  const skips = {}; its.filter(t => t.rec).forEach(t => (skips[t.rec] = skips[t.rec] || new Set()).add(ym(t.data)));
+  const ups = Object.entries(skips).map(([rid, ms]) => { const r = get(rid); return r ? {...r, skip:[...new Set([...(r.skip || []), ...ms])]} : null; }).filter(Boolean);
+  if (ups.length) putMany(ups);
+  delMany(its.map(t => t.id));
+  toast(`Fatura de ${monthShort(key)} apagada (${its.length} lançamento${its.length > 1 ? 's' : ''}). As outras faturas continuam iguais.`);
+}
+function formDelFatura(card, key){
+  const its = TX().filter(t => t.cartao === card.id && t.fatura === key), pags = its.filter(t => t.tipo === 'pagfatura'), compras = its.filter(t => t.tipo !== 'pagfatura');
+  const parc = compras.filter(t => t.grupo || isParc(t)).length, fixos = compras.filter(t => t.rec).length;
+  openSheet({title:`Apagar fatura ${card.nome} · ${monthShort(key)}?`, fields: pags.length ? [{k:'comPag', label:`Apagar também ${pags.length === 1 ? 'o pagamento' : `os ${pags.length} pagamentos`} desta fatura (${brl(pags.reduce((a, t) => a + (+t.valor), 0))}), devolvendo o valor ao saldo da conta`, type:'check'}] : [], saveLabel:'Apagar fatura',
+    extra:`<div class="callout" style="margin-top:${pags.length ? 10 : 0}px">Vão ser apagados <b>${compras.length} lançamento(s)</b> desta fatura, somando <b>${brl(compras.reduce((a, t) => a + (t.tipo === 'saida' ? +t.valor : -t.valor), 0))}</b>.${parc ? `<br>${parc} parcela(s): só a parcela deste mês sai. As parcelas das próximas faturas continuam.` : ''}${fixos ? `<br>${fixos} fixo(s): só este mês sai. O fixo continua nos próximos meses.` : ''}<br>As outras faturas não mudam.</div>`,
+    onSave: v => { delFatura(card, key, !!v.comPag); }});
 }
 function formConta(c){
   const isNew = !c; c = c || {tipo:'corrente', dataIni:today(), saldoIni:0, ativo:true};
@@ -4528,7 +4546,7 @@ function fabAction(){
 $('#fab').addEventListener('click', fabAction);
 document.addEventListener('click', async e => {
   if (e.target.closest('a[href]')) return;
-  const el = e.target.closest('[data-tab],[data-goto],[data-act],[data-edit],[data-din],[data-pat],[data-trip],[data-close],[data-chkdel],[data-horiz],[data-payfat],[data-fat],[data-settle],[data-aporte],[data-paydiv],[data-mil],[data-ttab],[data-pend],[data-clube],[data-vrec],[data-addday],[data-impall],[data-vtab],[data-orc],[data-cen],[data-oitchk],[data-wprice],[data-credit],[data-camptr],[data-plan],[data-calday],[data-fh],[data-flx],[data-divrec],[data-divall],[data-divtrip],[data-vcs],[data-acerto],[data-acdel],[data-chkmodel],[data-cpflim],[data-ruledel],[data-irano],[data-rec],[data-mkrec],[data-invmov],[data-invconf],[data-progres]');
+  const el = e.target.closest('[data-tab],[data-goto],[data-act],[data-edit],[data-din],[data-pat],[data-trip],[data-close],[data-chkdel],[data-horiz],[data-payfat],[data-fat],[data-settle],[data-aporte],[data-paydiv],[data-mil],[data-ttab],[data-pend],[data-clube],[data-vrec],[data-addday],[data-impall],[data-vtab],[data-orc],[data-cen],[data-oitchk],[data-wprice],[data-credit],[data-camptr],[data-plan],[data-calday],[data-fh],[data-flx],[data-divrec],[data-divall],[data-divtrip],[data-vcs],[data-acerto],[data-acdel],[data-chkmodel],[data-cpflim],[data-ruledel],[data-irano],[data-rec],[data-mkrec],[data-invmov],[data-invconf],[data-progres],[data-fatquit],[data-fatdel]');
   if (!el) return;
   if (el.dataset.close !== undefined){ if (e.target === el || el.tagName === 'BUTTON') closeSheet(); return; }
   if (el.dataset.tab){ UI.tab = el.dataset.tab; if (UI.tab !== 'viagens'){ UI.tripId = null; UI.orcId = null; } render(); scrollTo(0,0); return; }
@@ -4557,6 +4575,8 @@ document.addEventListener('click', async e => {
   if (el.dataset.payfat){ e.stopPropagation(); const [cid, key] = el.dataset.payfat.split('|'); return formPayFatura(get(cid), key); }
   if (el.dataset.fat){ const [cid, key] = el.dataset.fat.split('|'); return showFatura(get(cid), key); }
   if (el.dataset.progres){ const [id, v, d] = el.dataset.progres.split('|'), inv = get(id); closeSheet(); if (inv) formInvMov(inv, 'resgate', {v:+v, d, conta:contaOpts()[0]?.[0] || ''}); return; }
+  if (el.dataset.fatdel){ const [cid, key] = el.dataset.fatdel.split('|'); closeSheet(); if (get(cid)) formDelFatura(get(cid), key); return; }
+  if (el.dataset.fatquit){ const [cid, key] = el.dataset.fatquit.split('|'), card = get(cid), f = card && FIN.fatura(card, key, TX()); closeSheet(); if (f && f.pend > 0){ put({id:uid('tx'), kind:'tx', tipo:'pagfatura', cartao:cid, fatura:key, conta:'', valor:CALC.r2(f.pend), data:f.due < today() ? f.due : today(), pago:true, desc:`Fatura ${card.nome} (já estava paga)`}); toast('Fatura marcada como paga, sem mexer no saldo'); } return; }
   if (el.dataset.invconf){ const t = get(el.dataset.invconf); if (t) confirmInvMov(t); return; }
   if (el.dataset.settle){ const t = get(el.dataset.settle); if (t){ put({...t, pago:true, data: t.data > today() ? t.data : t.data}); toast(t.tipo==='entrada'?'Marcado como recebido':'Marcado como pago'); const apl = t.aplicarTx && get(t.aplicarTx); if (apl && !apl.pago) setTimeout(() => formAplicarAgora(apl), 500); } return; }
   if (el.dataset.aporte){ return formAporte(get(el.dataset.aporte)); }
