@@ -1484,7 +1484,7 @@ function formSettings(){
       <div class="actions"><button class="btn sm pri" data-act="sync-export">${ic('arrows')}Gerar arquivo de sincronização</button><button class="btn sm" data-act="import">${ic('doc')}Importar arquivo</button></div>
       <div class="actions"><button class="btn sm" data-act="import-bank">${ic('bank')}Importar extrato do banco</button><button class="btn sm" data-act="change-pass">${ic('lock')}Trocar usuário ou senha</button></div>
       <div class="actions"><button class="btn sm" data-act="pin">${ic('key')}${pinDoc() ? 'PIN ativo · trocar' : 'Ativar PIN de 6 dígitos'}</button><button class="btn sm" data-act="xlsx">${ic('sheet')}Exportar para Excel</button><button class="btn sm" data-act="rules">${ic('rule')}Regras de categoria (${all('rule').length})</button><button class="btn sm" data-act="log">${ic('history')}Histórico de alterações</button></div>
-      <div class="actions"><button class="btn sm danger" data-act="reset">${ic('x')}Começar do zero</button></div>
+      <div class="actions"><button class="btn sm danger" data-act="reset-meses">${ic('calendar')}Apagar meses</button><button class="btn sm danger" data-act="reset">${ic('x')}Começar do zero</button></div>
       <div class="actions"><button class="btn sm" data-act="export">Backup aberto (sem senha)</button>${[...S.items.values()].some(x=>x.ex)?'<button class="btn sm" data-act="unseed">Apagar exemplos</button>':'<button class="btn sm" data-act="seed">Carregar exemplos</button>'}</div>
       <p class="note" style="margin:0">O backup aberto não tem senha: serve para recuperar tudo se você esquecer a senha. Guarde em local seguro. O app bloqueia sozinho após 5 minutos sem uso ou 1 minuto fora da tela.</p></div>`,
     onSave: v => {
@@ -4545,6 +4545,31 @@ function formReset(){
     }});
 }
 
+
+/* ---------- Apagar meses escolhidos ---------- */
+function formResetMeses(){
+  const by = {}; TX().forEach(t => { const m = ym(t.data); by[m] = (by[m] || 0) + 1; });
+  const ms = Object.keys(by).sort().reverse(), cur = ym(today());
+  if (!ms.length){ toast('Não há lançamentos para apagar'); return; }
+  const fields = [...ms.map(m => ({k:'m_' + m, label:`${cap(monthName(m))}${m === cur ? ' (mês atual)' : m > cur ? ' (futuro)' : ''} · ${by[m]} lançamento(s)`, type:'check', full:true})),
+    {k:'manterSaldo', label:'Manter o saldo atual de cada conta', type:'check', def:true, full:true},
+    {k:'conf', label:'Para confirmar, digite APAGAR', ph:'APAGAR', full:true}];
+  openSheet({title:'Apagar meses', fields, saveLabel:'Apagar meses escolhidos',
+    extra:`<div class="actions" style="margin-top:10px"><button class="btn sm" data-act="resetm-prev">Marcar todos antes de ${monthName(cur).toLowerCase().split(' ')[0]}</button><button class="btn sm" data-act="resetm-none">Desmarcar</button></div>
+      <p class="note">Apaga só os lançamentos dos meses marcados (pela data de cada um). Parcelas e fixos dos outros meses continuam, e os fixos não voltam nos meses apagados. Com “manter o saldo”, cada conta continua com o saldo de hoje. Vale em todos os aparelhos sincronizados e não dá para desfazer.</p><div id="resetm-cnt" class="note"></div>`,
+    onInput: v => { const sel = ms.filter(m => v['m_' + m]), n = sel.reduce((a, m) => a + by[m], 0), el = $('#resetm-cnt'); if (el) el.textContent = n ? `${n} lançamento(s) em ${sel.length} mês(es) serão apagados.` : 'Marque os meses que não quer mais.'; },
+    onSave: v => {
+      const sel = new Set(ms.filter(m => v['m_' + m])); if (!sel.size) return 'Marque pelo menos um mês.';
+      if (String(v.conf || '').trim().toUpperCase() !== 'APAGAR') return 'Digite APAGAR para confirmar.';
+      const txs = TX(), del_ = txs.filter(t => sel.has(ym(t.data))), ids = new Set(del_.map(t => t.id)), rest = txs.filter(t => !ids.has(t.id)), ups = [];
+      if (v.manterSaldo) for (const c of all('conta')){ const antes = FIN.contaSaldo(c, txs), depois = FIN.contaSaldo(c, rest); if (Math.abs(antes - depois) > 0.004) ups.push({...c, saldoIni:CALC.r2((+c.saldoIni || 0) + antes - depois)}); }
+      const skips = {}; del_.filter(t => t.rec).forEach(t => (skips[t.rec] = skips[t.rec] || new Set()).add(ym(t.data)));
+      Object.entries(skips).forEach(([rid, set]) => { const r = get(rid); if (r) ups.push({...r, skip:[...new Set([...(r.skip || []), ...set])]}); });
+      const snaps = [...sel].map(m => 'snap_' + m).filter(id => get(id));
+      (async () => { if (ups.length) await putMany(ups); await delMany([...ids, ...snaps]); render(); toast(`${ids.size} lançamento(s) de ${sel.size} mês(es) apagados`); })();
+    }});
+}
+
 /* ===================== RENDER + EVENTOS ===================== */
 function render(){
   renderChrome();
@@ -4659,6 +4684,8 @@ document.addEventListener('click', async e => {
   if (a === 'ir-print'){ const ano = UI.irAno || new Date().getFullYear() - 1; printDoc(irHtml(ano)); return; }
   if (a === 'compra') return formCompra();
   if (a === 'reset'){ closeSheet(); return formReset(); }
+  if (a === 'reset-meses'){ closeSheet(); return formResetMeses(); }
+  if (a === 'resetm-prev' || a === 'resetm-none'){ const cur = ym(today()); document.querySelectorAll('#sheet-form input[type=checkbox][id^="f-m_"]').forEach(c => { c.checked = a === 'resetm-prev' && c.id.slice(4) < cur; }); $('#sheet-form').dispatchEvent(new Event('input', {bubbles:true})); return; }
   if (a === 'inv-confirm'){ const t = get(UI.txEdit); closeSheet(); if (t) confirmInvMov(t); return; }
   if (a === 'log'){ closeSheet(); return formLog(); }
   if (a === 'flt-clear'){ Object.keys(FLT).forEach(k => FLT[k] = ''); render(); return; }
