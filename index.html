@@ -434,10 +434,10 @@ const FIN = {
     return CALC.r2(s);
   },
   // Receitas/despesas por competência (data da compra/lançamento). Transferências e pagamentos de fatura/dívida não entram.
-  monthTotals(txs, m){
+  monthTotals(txs, m, kf){
     let e = 0, s = 0, prev = 0;
     for (const t of txs){
-      if (String(t.data).slice(0,7) !== m) continue;
+      if ((kf ? kf(t) : String(t.data).slice(0,7)) !== m) continue;
       const v = +t.valor || 0;
       if (t.tipo === 'entrada'){ if (t.cartao) s -= v; else e += v; }
       else if (t.tipo === 'saida') s += v;
@@ -829,8 +829,11 @@ function renderChrome(){
 
 /* ===================== DERIVADOS ===================== */
 const TX = () => all('tx');
-const monthTx = m => TX().filter(t => ym(t.data) === m);
-const monthTotals = m => FIN.monthTotals(TX(), m);
+// Regime de visualização: "compra" (mês da data) ou "fatura" (compras no cartão contam no mês da fatura).
+const regime = () => 'compra';
+const txMonth = t => regime() === 'fatura' && t.cartao && t.fatura ? t.fatura : ym(t.data);
+const monthTx = m => TX().filter(t => txMonth(t) === m);
+const monthTotals = m => FIN.monthTotals(TX(), m, txMonth);
 const progBalance = pid => all('pmov').filter(m => m.prog === pid && !isPend(m)).reduce((s,m)=>s+(+m.qtd),0);
 function invSummary(){ const s = settings(), t = today(); let ap = 0, lq = 0, br = 0; for (const i of invAtivos()){ const r = CALC.evaluate(i, s, t); ap += +i.aplicado||0; lq += r.liq; br += r.bruto; } return {ap, lq, br}; }
 function contasSaldo(){ const txs = TX(); return all('conta').filter(c => c.ativo !== false).reduce((s,c)=>s+FIN.contaSaldo(c, txs),0); }
@@ -966,8 +969,8 @@ function txRow(t){
   return `<div class="item" role="button" tabindex="0" data-edit="tx" data-id="${t.id}">${txTile(t)}<div class="main"><div class="t">${esc(title)}${flags}</div><div class="m">${sub.filter(Boolean).map(esc).join(' · ')}</div></div><div class="amt ${inc && !t.cartao ? 'pos' : ''}">${sign}${brl(t.valor)}</div></div>`;
 }
 function vDinheiro(){
-  const seg = `<div class="seg subnav">${[['lanc','Lançamentos'],['apagar','A pagar'],['contas','Contas'],['cartoes','Cartões'],['parc','Parcelas'],['div','Divididos'],['assin','Fixos'],['orc','Orçamento'],['conc','Conciliação']].map(([k,l])=>`<button class="${UI.din===k?'on':''}" data-din="${k}">${l}</button>`).join('')}</div>`;
-  const body = {lanc:dinLanc, apagar:dinApagar, contas:dinContas, cartoes:dinCartoes, parc:dinParc, div:dinDiv, assin:dinAssin, orc:dinOrc, conc:dinConc}[UI.din]();
+  const seg = `<div class="seg subnav">${[['lanc','Lançamentos'],['caixa','Fluxo de caixa'],['apagar','A pagar'],['contas','Contas'],['cartoes','Cartões'],['parc','Parcelas'],['div','Divididos'],['assin','Fixos'],['orc','Orçamento'],['conc','Conciliação']].map(([k,l])=>`<button class="${UI.din===k?'on':''}" data-din="${k}">${l}</button>`).join('')}</div>`;
+  const body = {lanc:dinLanc, caixa:dinCaixa, apagar:dinApagar, contas:dinContas, cartoes:dinCartoes, parc:dinParc, div:dinDiv, assin:dinAssin, orc:dinOrc, conc:dinConc}[UI.din]();
   return `${head('Dinheiro', `Saldo em contas <b class="money" style="color:var(--ink)">${brl(contasSaldo())}</b>`)}${seg}${body}`;
 }
 function monthNav(){ return `<div class="monthnav"><button class="icon-btn" data-act="mprev" aria-label="Mês anterior">${ic('chevL')}</button><b>${monthName(UI.month)}</b><button class="icon-btn" data-act="mnext" aria-label="Próximo mês">${ic('chevron')}</button></div>`; }
@@ -981,7 +984,7 @@ function dayLabel(d){
 function dinLanc(){
   const q = UI.q.trim().toLowerCase();
   const tx = applyFlt(q ? TX().filter(t => [t.desc, t.cat, t.sub, get(t.conta)?.nome, get(t.cartao)?.nome].join(' ').toLowerCase().includes(q)) : monthTx(UI.month)).sort((a,b)=> a.data < b.data ? 1 : a.data > b.data ? -1 : 0);
-  const mt = fltOn() ? FIN.monthTotals(tx, UI.month) : monthTotals(UI.month);
+  const mt = fltOn() ? FIN.monthTotals(tx, UI.month, txMonth) : monthTotals(UI.month);
   let list = '';
   if (tx.length){
     TX_DATE = !!q;
@@ -3544,7 +3547,7 @@ function vTripComp(){
 /* ---------- Menu lateral (computador) ---------- */
 const SIDE = [
   {tab:'inicio', label:'Início', icon:'home'},
-  {tab:'dinheiro', label:'Dinheiro', icon:'wallet', key:'din', subs:[['lanc','Lançamentos'],['apagar','A pagar'],['contas','Contas'],['cartoes','Cartões'],['parc','Parcelas ativas'],['div','Divididos'],['assin','Fixos e assinaturas'],['orc','Orçamento'],['conc','Conciliação']]},
+  {tab:'dinheiro', label:'Dinheiro', icon:'wallet', key:'din', subs:[['lanc','Lançamentos'],['caixa','Fluxo de caixa'],['apagar','A pagar'],['contas','Contas'],['cartoes','Cartões'],['parc','Parcelas ativas'],['div','Divididos'],['assin','Fixos e assinaturas'],['orc','Orçamento'],['conc','Conciliação']]},
   {tab:'planejar', label:'Planejar', icon:'chart', key:'plan', subs:PLAN_TABS},
   {tab:'patrimonio', label:'Patrimônio', icon:'pie', key:'pat', subs:[['inv','Investimentos'],['evol','Evolução'],['cart','Carteira'],['reco','Onde investir'],['sim','Simulador'],['metas','Metas'],['dividas','Dívidas']]},
   {tab:'pontos', label:'Milhas', icon:'star', key:'mil', subs:[['carteira','Carteira'],['mov','Movimentos'],['camp','Bônus'],['emis','Emissões'],['metas','Metas'],['vendas','Vendas'],['clubes','Clubes'],['cpf','Beneficiários'],['calc','Simular']]},
@@ -4580,6 +4583,40 @@ function formResetMeses(){
     }});
 }
 
+
+/* ---------- Fluxo de caixa mês a mês (só o que ainda vai entrar ou sair) ---------- */
+function caixaRows(h){ const keep = {...FLX}; FLX.out = false; FLX.inn = false; FLX.trips = false; try { return flowProj(h).rows; } finally { Object.assign(FLX, keep); } }
+function dinCaixa(){
+  const t = today(), cur = ym(t), m = UI.month;
+  if (m < cur) return `${monthNav()}<section class="card">${emptyBox('calendar','gray',`${cap(monthName(m))} já passou. O fluxo de caixa mostra do mês atual em diante; o histórico fica em Lançamentos.`, '<button class="btn sm pri" data-act="caixa-hoje">Ir para o mês atual</button>')}</section>`;
+  const i = monthsBetween(cur, m), rows = caixaRows(i + 1), r = rows[i], ini = i === 0 ? contasSaldo() : rows[i - 1].saldo;
+  const inM = d => i === 0 ? ym(d) <= m : ym(d) === m, txs = TX();
+  const ent = txs.filter(x => !x.pago && !x.cartao && inM(x.data) && (x.tipo === 'entrada' || x.invMov === 'resgate')).sort((a, b) => a.data < b.data ? -1 : 1);
+  const sai = txs.filter(x => !x.pago && !x.cartao && inM(x.data) && (x.tipo === 'saida' || x.invMov === 'aporte')).sort((a, b) => a.data < b.data ? -1 : 1);
+  const fats = all('cartao').flatMap(c => FIN.faturasDoCartao(c, txs).filter(f => f.pend > 0.004 && inM(f.due)).map(f => ({c, f}))).sort((a, b) => a.f.due < b.f.due ? -1 : 1);
+  const divs = all('divida').filter(d => d.status !== 'quitada' && +d.parcela > 0).filter(d => { const k = monthsBetween(d.proxVenc ? ym(d.proxVenc) : cur, m); return k >= 0 && (!+d.restantes || k < +d.restantes) && !(i === 0 && d.proxVenc && d.proxVenc < t); });
+  const tE = r.ent, tS = r.sai + r.fat + r.dv;
+  const row = (x, sign) => `<div class="item" role="button" tabindex="0" data-edit="tx" data-id="${x.id}">${x.invMov ? tile('trend','green') : catTile(x.cat)}<div class="main"><div class="t">${esc(x.desc || x.cat)}</div><div class="m">${fmtD(x.data)}${x.data < t ? ' · <span class="neg">atrasado</span>' : ''} · ${esc(get(x.conta || x.contaDest)?.nome || '')}</div></div><div class="amt ${sign > 0 ? 'pos' : ''}"><div>${sign > 0 ? '+ ' : '− '}${brl(x.valor)}</div>${x.invMov ? `<button class="btn sm" style="margin-top:6px" data-invconf="${x.id}">Confirmar</button>` : `<button class="btn sm" style="margin-top:6px" data-settle="${x.id}">${sign > 0 ? 'Recebi' : 'Paguei'}</button>`}</div></div>`;
+  const vazio = !ent.length && !sai.length && !fats.length && !divs.length;
+  return `${monthNav()}
+    <section class="card hero"><div class="card-head"><span class="label">Caixa de ${monthName(m).toLowerCase()}</span><span class="label">só o que ainda vai entrar ou sair</span></div>
+      <div class="flow">
+        <div class="flow-row">${tile('bank','blue')}<span>${i === 0 ? 'Saldo hoje nas contas' : `Saldo que vem de ${monthName(mAdd(m, -1)).toLowerCase().split(' ')[0]}`}</span><b class="${ini < 0 ? 'neg' : ''}">${brl(ini)}</b></div>
+        <div class="flow-row">${tile('trend','green')}<span>Entradas do mês</span><b class="pos">+ ${brl(tE)}</b></div>
+        <div class="flow-row">${tile('receipt','red')}<span>Saídas do mês</span><b>− ${brl(tS)}</b></div>
+        <div class="flow-row total"><span>Saldo no fim de ${monthName(m).toLowerCase().split(' ')[0]}</span><b class="${r.saldo < 0 ? 'neg' : ''}">${brl(r.saldo)}</b></div>
+      </div></section>
+    ${r.saldo < 0 ? `<div class="banner warn">${ic('alert')}<span>O saldo fica negativo neste mês.${coberturaHtml(Math.ceil(-r.saldo / 100) * 100, m + '-01')}</span></div>` : ''}
+    ${vazio ? `<section class="card">${emptyBox('check','green', i === 0 ? 'Nada mais para entrar ou sair neste mês: tudo já foi pago ou recebido.' : 'Nada previsto para este mês ainda.')}</section>` : ''}
+    ${ent.length ? `<section class="card"><div class="card-head"><h3>Entradas</h3><span class="label">${brl(tE)}</span></div><div class="list">${ent.map(x => row(x, 1)).join('')}</div></section>` : ''}
+    ${fats.length || sai.length || divs.length ? `<section class="card"><div class="card-head"><h3>Saídas</h3><span class="label">${brl(tS)}</span></div><div class="list">
+      ${fats.map(({c, f}) => `<div class="item" role="button" tabindex="0" data-fat="${c.id}|${f.key}">${tile('card','indigo')}<div class="main"><div class="t">Fatura ${esc(c.nome)}</div><div class="m">vence ${fmtD(f.due)}${f.due < t ? ' · <span class="neg">vencida</span>' : ''} · compras até ${fmtD(f.close)}</div></div><div class="amt"><div>− ${brl(f.pend)}</div><button class="btn sm" style="margin-top:6px" data-payfat="${c.id}|${f.key}">Pagar</button></div></div>`).join('')}
+      ${sai.map(x => row(x, -1)).join('')}
+      ${divs.map(d => `<div class="item" role="button" tabindex="0" data-edit="divida" data-id="${d.id}">${tile('receipt','orange')}<div class="main"><div class="t">Parcela: ${esc(d.desc)}</div><div class="m">${esc(d.credor || 'dívida')}</div></div><div class="amt">− ${brl(d.parcela)}</div></div>`).join('')}
+    </div></section>` : ''}
+    <p class="foot" style="margin:0">Cada fatura de cartão entra inteira no mês em que vence, e o que já foi pago ou recebido sai da conta. O saldo do fim do mês passa para o mês seguinte. Gastos do dia a dia ainda não lançados não entram aqui: para essa estimativa, veja Planejar › Fluxo futuro.</p>`;
+}
+
 /* ===================== RENDER + EVENTOS ===================== */
 function render(){
   renderChrome();
@@ -4614,7 +4651,7 @@ function fabAction(){
 $('#fab').addEventListener('click', fabAction);
 document.addEventListener('click', async e => {
   if (e.target.closest('a[href]')) return;
-  const el = e.target.closest('[data-tab],[data-goto],[data-act],[data-edit],[data-din],[data-pat],[data-trip],[data-close],[data-chkdel],[data-horiz],[data-payfat],[data-fat],[data-settle],[data-aporte],[data-paydiv],[data-mil],[data-ttab],[data-pend],[data-clube],[data-vrec],[data-addday],[data-impall],[data-vtab],[data-orc],[data-cen],[data-oitchk],[data-wprice],[data-credit],[data-camptr],[data-plan],[data-calday],[data-fh],[data-flx],[data-divrec],[data-divall],[data-divtrip],[data-vcs],[data-acerto],[data-acdel],[data-chkmodel],[data-cpflim],[data-ruledel],[data-irano],[data-rec],[data-mkrec],[data-invmov],[data-invconf],[data-progres],[data-fatquit],[data-fatdel]');
+  const el = e.target.closest('[data-tab],[data-goto],[data-act],[data-edit],[data-din],[data-pat],[data-trip],[data-close],[data-chkdel],[data-horiz],[data-payfat],[data-fat],[data-settle],[data-aporte],[data-paydiv],[data-mil],[data-ttab],[data-pend],[data-clube],[data-vrec],[data-addday],[data-impall],[data-vtab],[data-orc],[data-cen],[data-oitchk],[data-wprice],[data-credit],[data-camptr],[data-plan],[data-calday],[data-fh],[data-flx],[data-divrec],[data-divall],[data-divtrip],[data-vcs],[data-acerto],[data-acdel],[data-chkmodel],[data-cpflim],[data-ruledel],[data-irano],[data-rec],[data-mkrec],[data-invmov],[data-invconf],[data-progres],[data-fatquit],[data-fatdel],[data-regime],[data-payfat]');
   if (!el) return;
   if (el.dataset.close !== undefined){ if (e.target === el || el.tagName === 'BUTTON') closeSheet(); return; }
   if (el.dataset.tab){ UI.tab = el.dataset.tab; if (UI.tab !== 'viagens'){ UI.tripId = null; UI.orcId = null; } render(); scrollTo(0,0); return; }
@@ -4643,6 +4680,8 @@ document.addEventListener('click', async e => {
   if (el.dataset.payfat){ e.stopPropagation(); const [cid, key] = el.dataset.payfat.split('|'); return formPayFatura(get(cid), key); }
   if (el.dataset.fat){ const [cid, key] = el.dataset.fat.split('|'); return showFatura(get(cid), key); }
   if (el.dataset.progres){ const [id, v, d] = el.dataset.progres.split('|'), inv = get(id); closeSheet(); if (inv) formInvMov(inv, 'resgate', {v:+v, d, conta:contaOpts()[0]?.[0] || ''}); return; }
+  if (el.dataset.payfat){ const [cid, key] = el.dataset.payfat.split('|'); if (get(cid)) formPayFatura(get(cid), key); return; }
+  if (el.dataset.regime){ put({...(get('settings') || {}), id:'settings', kind:'settings', regime:el.dataset.regime}); toast(el.dataset.regime === 'fatura' ? 'Compras no cartão agora aparecem no mês da fatura' : 'Lançamentos agora aparecem pela data da compra'); return; }
   if (el.dataset.fatdel){ const [cid, key] = el.dataset.fatdel.split('|'); closeSheet(); if (get(cid)) formDelFatura(get(cid), key); return; }
   if (el.dataset.fatquit){ const [cid, key] = el.dataset.fatquit.split('|'), card = get(cid), f = card && FIN.fatura(card, key, TX()); closeSheet(); if (f && f.pend > 0){ put({id:uid('tx'), kind:'tx', tipo:'pagfatura', cartao:cid, fatura:key, conta:'', valor:CALC.r2(f.pend), data:f.due < today() ? f.due : today(), pago:true, desc:`Fatura ${card.nome} (já estava paga)`}); toast('Fatura marcada como paga, sem mexer no saldo'); } return; }
   if (el.dataset.invconf){ const t = get(el.dataset.invconf); if (t) confirmInvMov(t); return; }
@@ -4693,6 +4732,7 @@ document.addEventListener('click', async e => {
   if (a === 'trip-dl'){ const tr = get(UI.tripId); if (tr) downloadDoc(`roteiro-${norm(tr.destino).replace(/[^a-z0-9]+/g, '-').slice(0, 40)}.html`, `Roteiro ${tr.destino}`, tripHtml(tr)); return; }
   if (a === 'ir-print'){ const ano = UI.irAno || new Date().getFullYear() - 1; printDoc(irHtml(ano)); return; }
   if (a === 'compra') return formCompra();
+  if (a === 'caixa-hoje'){ UI.month = ym(today()); render(); return; }
   if (a === 'reset'){ closeSheet(); return formReset(); }
   if (a === 'reset-meses'){ closeSheet(); return formResetMeses(); }
   if (a === 'resetm-prev' || a === 'resetm-none'){ const cur = ym(today()); document.querySelectorAll('#sheet-form input[type=checkbox][id^="f-m_"]').forEach(c => { c.checked = a === 'resetm-prev' && c.id.slice(4) < cur; }); $('#sheet-form').dispatchEvent(new Event('input', {bubbles:true})); return; }
