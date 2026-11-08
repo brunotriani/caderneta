@@ -1484,6 +1484,7 @@ function formSettings(){
       <div class="actions"><button class="btn sm pri" data-act="sync-export">${ic('arrows')}Gerar arquivo de sincronização</button><button class="btn sm" data-act="import">${ic('doc')}Importar arquivo</button></div>
       <div class="actions"><button class="btn sm" data-act="import-bank">${ic('bank')}Importar extrato do banco</button><button class="btn sm" data-act="change-pass">${ic('lock')}Trocar usuário ou senha</button></div>
       <div class="actions"><button class="btn sm" data-act="pin">${ic('key')}${pinDoc() ? 'PIN ativo · trocar' : 'Ativar PIN de 6 dígitos'}</button><button class="btn sm" data-act="xlsx">${ic('sheet')}Exportar para Excel</button><button class="btn sm" data-act="rules">${ic('rule')}Regras de categoria (${all('rule').length})</button><button class="btn sm" data-act="log">${ic('history')}Histórico de alterações</button></div>
+      <div class="actions"><button class="btn sm danger" data-act="reset">${ic('x')}Começar do zero</button></div>
       <div class="actions"><button class="btn sm" data-act="export">Backup aberto (sem senha)</button>${[...S.items.values()].some(x=>x.ex)?'<button class="btn sm" data-act="unseed">Apagar exemplos</button>':'<button class="btn sm" data-act="seed">Carregar exemplos</button>'}</div>
       <p class="note" style="margin:0">O backup aberto não tem senha: serve para recuperar tudo se você esquecer a senha. Guarde em local seguro. O app bloqueia sozinho após 5 minutos sem uso ou 1 minuto fora da tela.</p></div>`,
     onSave: v => {
@@ -4512,6 +4513,38 @@ function coberturaHtml(falta, quando){
   return L.ja >= falta ? `<br>Dá para cobrir resgatando de <b>${esc(f.i.nome)}</b> (${esc(invLiq(f.i).txt)}). <button class="btn sm" style="margin-top:6px" data-progres="${f.i.id}|${CALC.r2(falta)}|${d}">Programar resgate de ${brl0(falta)}</button>` : `<br>Seus investimentos de resgate rápido somam ${brl0(L.ja)}, menos do que falta.`;
 }
 
+
+/* ===================== v14: COMEÇAR DO ZERO ===================== */
+const RESET_G = [
+  ['lanc', 'Lançamentos', 'receitas, gastos, transferências, faturas e pagamentos, fixos, notificações pendentes e o histórico do patrimônio', ['tx','rec','pend','snap','auditlog'], true],
+  ['contas', 'Contas e cartões', 'as contas bancárias e os cartões cadastrados', ['conta','cartao'], false],
+  ['inv', 'Investimentos', 'aplicações e o histórico de aportes e resgates', ['inv'], false],
+  ['metas', 'Metas, dívidas e limites', 'metas de economia, dívidas e limites do orçamento', ['meta','divida','bud'], false],
+  ['milhas', 'Milhas e pontos', 'programas, movimentos, clubes, bônus, metas e beneficiários', ['prog','pmov','clube','camp','mgoal','benef'], false],
+  ['viagens', 'Viagens', 'viagens, gastos, roteiros, orçamentos, monitor de preços, moeda e documentos', ['trip','tcost','tday','orc','cen','oitem','watch','fx','doc'], false],
+];
+function formReset(){
+  const fields = [...RESET_G.map(([k, l, d, , def]) => ({k:'g_' + k, label:`${l}: ${d}`, type:'check', def, full:true})),
+    {k:'manterSaldo', label:'Manter o saldo atual de cada conta (vira o saldo inicial de hoje)', type:'check', def:true, full:true},
+    {k:'conf', label:'Para confirmar, digite APAGAR', ph:'APAGAR', full:true}];
+  openSheet({title:'Começar do zero', fields, saveLabel:'Apagar e começar de novo',
+    extra:`<div class="banner warn" style="margin-top:10px">${ic('alert')}<span>Isso apaga de verdade, <b>em todos os aparelhos sincronizados</b>, e não dá para desfazer. Faça um backup antes, por segurança.</span></div><button class="btn full" style="margin-top:8px" data-act="sync-export">${ic('shield')}Fazer backup antes</button><p class="note">Seu usuário, senha, PIN, ajustes, categorias e regras continuam.</p><div id="reset-cnt" class="note"></div>`,
+    onInput: v => {
+      showF('manterSaldo', !!v.g_lanc && !v.g_contas);
+      const n = RESET_G.filter(g => v['g_' + g[0]]).reduce((a, g) => a + [...S.items.values()].filter(i => g[3].includes(i.kind)).length, 0), el = $('#reset-cnt');
+      if (el) el.textContent = n ? `${n} registro(s) serão apagados.` : 'Escolha o que apagar.';
+    },
+    onSave: v => {
+      const kinds = RESET_G.filter(g => v['g_' + g[0]]).flatMap(g => g[3]);
+      if (!kinds.length) return 'Escolha pelo menos um grupo para apagar.';
+      if (String(v.conf || '').trim().toUpperCase() !== 'APAGAR') return 'Digite APAGAR para confirmar.';
+      const ids = [...S.items.values()].filter(i => kinds.includes(i.kind)).map(i => i.id);
+      const ups = [];
+      if (v.g_lanc && !v.g_contas && v.manterSaldo) for (const c of all('conta')) ups.push({...c, saldoIni:CALC.r2(FIN.contaSaldo(c, TX().filter(t => t.data <= today()))), dataIni:today()});
+      (async () => { if (ups.length) await putMany(ups); await delMany(ids); REC_DAY = ''; SNAP_DAY = ''; Object.keys(FLT).forEach(k => FLT[k] = ''); UI.tab = 'inicio'; UI.tripId = null; UI.orcId = null; render(); toast(`Pronto: ${ids.length} registro(s) apagados. Começando do zero.`); })();
+    }});
+}
+
 /* ===================== RENDER + EVENTOS ===================== */
 function render(){
   renderChrome();
@@ -4625,6 +4658,7 @@ document.addEventListener('click', async e => {
   if (a === 'trip-dl'){ const tr = get(UI.tripId); if (tr) downloadDoc(`roteiro-${norm(tr.destino).replace(/[^a-z0-9]+/g, '-').slice(0, 40)}.html`, `Roteiro ${tr.destino}`, tripHtml(tr)); return; }
   if (a === 'ir-print'){ const ano = UI.irAno || new Date().getFullYear() - 1; printDoc(irHtml(ano)); return; }
   if (a === 'compra') return formCompra();
+  if (a === 'reset'){ closeSheet(); return formReset(); }
   if (a === 'inv-confirm'){ const t = get(UI.txEdit); closeSheet(); if (t) confirmInvMov(t); return; }
   if (a === 'log'){ closeSheet(); return formLog(); }
   if (a === 'flt-clear'){ Object.keys(FLT).forEach(k => FLT[k] = ''); render(); return; }
