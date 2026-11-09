@@ -359,6 +359,11 @@ const CALC = (() => {
   }
   // Estimativa a partir do último saldo real informado (se houver), senão do valor aplicado.
   function evaluate(inv, s, at){
+    if (+inv.liqBanco > 0 && inv.liqData && (!inv.moeda || inv.moeda === 'BRL')){
+      const base = {...inv, liqBanco:0}, r = evaluate(base, s, at);
+      if (days(inv.liqData, at) >= 0 && days(inv.inicio, at) < 31){ const off = +inv.liqBanco - evaluate(base, s, inv.liqData).liq; return {...r, liq:r.liq + off, ir:r.ir, iof:Math.max(0, r.iof - off), liqBanco:true}; }
+      return r;
+    }
     const P = +inv.aplicado || 0;
     const real = +inv.saldoReal || +inv.atual || 0;
     const dias = Math.max(0, days(inv.inicio, at));
@@ -842,7 +847,8 @@ function patrimonio(){
   const faturas = all('cartao').reduce((s,c)=>s+FIN.faturasDoCartao(c, txs).reduce((a,f)=>a+f.pend,0),0);
   const dividas = all('divida').filter(d=>d.status!=='quitada').reduce((s,d)=>s+(+d.saldo||0),0);
   const pts = all('prog').reduce((s,p)=>s+progBalance(p.id)/1000*(+p.milheiro||0),0);
-  return { contas, inv, ativos:contas+inv, faturas, dividas, passivos:faturas+dividas, liquido:contas+inv-faturas-dividas, pts };
+  const fxv = typeof fxValorHoje === 'function' ? fxValorHoje() : 0, invT = inv + fxv;
+  return { contas, inv:invT, fx:fxv, ativos:contas+invT, faturas, dividas, passivos:faturas+dividas, liquido:contas+invT-faturas-dividas, pts };
 }
 const ondeLabel = t => t.cartao ? (get(t.cartao)?.nome || 'Cartão') : t.conta ? (get(t.conta)?.nome || 'Conta') : '';
 const barCls = p => p > 1 ? 'bad' : p > .85 ? 'warn' : '';
@@ -1066,8 +1072,8 @@ function dinOrc(){
 /* ---------- Patrimônio ---------- */
 function vPatrimonio(){
   const P = patrimonio();
-  const seg = `<div class="seg subnav">${[['inv','Investimentos'],['evol','Evolução'],['cart','Carteira'],['reco','Onde investir'],['sim','Simulador'],['metas','Metas'],['dividas','Dívidas']].map(([k,l])=>`<button class="${UI.pat===k?'on':''}" data-pat="${k}">${l}</button>`).join('')}</div>`;
-  const body = {inv:patInv, evol:patEvol, cart:patCart, reco:patReco, sim:simulator, metas:patMetas, dividas:patDividas}[UI.pat]();
+  const seg = `<div class="seg subnav">${[['inv','Investimentos'],['moeda','Dólar e euro'],['evol','Evolução'],['cart','Carteira'],['reco','Onde investir'],['sim','Simulador'],['metas','Metas'],['dividas','Dívidas']].map(([k,l])=>`<button class="${UI.pat===k?'on':''}" data-pat="${k}">${l}</button>`).join('')}</div>`;
+  const body = {inv:patInv, moeda:vMoeda, evol:patEvol, cart:patCart, reco:patReco, sim:simulator, metas:patMetas, dividas:patDividas}[UI.pat]();
   return `${head('Patrimônio', `Líquido <b class="money" style="color:var(--ink)">${brl(P.liquido)}</b>`)}${seg}${body}`;
 }
 const DIST_HUES = ['--h-green','--h-indigo','--h-blue','--h-orange','--h-purple','--h-teal','--h-pink','--h-yellow'];
@@ -3077,11 +3083,13 @@ function niceStep(span, parts = 4){ const raw = (span || 1) / parts, p = Math.po
 /* ---------- Gráficos genéricos (SVG) ---------- */
 function lineSvg(vals, labels, o = {}){
   const W = 340, H = o.h || 180, L = 44, R = 8, B = 22, T = 10, n = vals.length;
-  const lo = Math.min(0, ...vals, o.ref ?? 0), hi = Math.max(0, ...vals, o.ref ?? 0), st = niceStep(hi - lo);
+  const z = o.noZero ? [] : [0], rf = o.ref != null ? [o.ref] : [];
+  let lo = Math.min(...z, ...vals, ...rf), hi = Math.max(...z, ...vals, ...rf); if (o.noZero){ const pad = Math.max((hi - lo) * .25, Math.abs(hi) * .01 || .01); lo -= pad; hi += pad; }
+  const st = niceStep(hi - lo);
   const yMin = Math.floor(lo / st) * st, yMax = Math.max(yMin + st, Math.ceil(hi / st) * st);
   const x = i => L + (W - L - R) * (n > 1 ? i / (n - 1) : .5), y = v => T + (H - T - B) * (1 - (v - yMin) / (yMax - yMin));
   let g = '';
-  for (let v = yMin; v <= yMax + 1e-9; v += st){ const yy = y(v); g += `<line x1="${L}" x2="${W}" y1="${yy}" y2="${yy}" stroke="var(--line)" ${Math.abs(v) > 1e-9 ? 'stroke-dasharray="3 4"' : ''}/><text x="${L - 6}" y="${yy + 3.5}" text-anchor="end" font-size="9.5" fill="var(--muted)">${v ? shortV(v) : '0'}</text>`; }
+  for (let v = yMin; v <= yMax + 1e-9; v += st){ const yy = y(v); g += `<line x1="${L}" x2="${W}" y1="${yy}" y2="${yy}" stroke="var(--line)" ${Math.abs(v) > 1e-9 ? 'stroke-dasharray="3 4"' : ''}/><text x="${L - 6}" y="${yy + 3.5}" text-anchor="end" font-size="9.5" fill="var(--muted)">${Math.abs(v) < 1e-9 ? '0' : Math.abs(v) < 100 ? (+v.toFixed(3)).toLocaleString('pt-BR') : shortV(v)}</text>`; }
   const every = Math.max(1, Math.ceil(n / 7));
   labels.forEach((l, i) => { if (i % every === 0 || (i === n - 1 && (n - 1) % every >= every / 2)) g += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--muted)">${esc(l)}</text>`; });
   if (o.ref != null){ g += `<line x1="${L}" x2="${W}" y1="${y(o.ref)}" y2="${y(o.ref)}" stroke="var(--h-orange)" stroke-width="1.5" stroke-dasharray="5 4"/>` + (o.refLabel ? `<text x="${W - 2}" y="${y(o.ref) - 5}" text-anchor="end" font-size="10" font-weight="600" fill="var(--h-orange)">${esc(o.refLabel)}</text>` : ''); }
@@ -3549,7 +3557,7 @@ const SIDE = [
   {tab:'inicio', label:'Início', icon:'home'},
   {tab:'dinheiro', label:'Dinheiro', icon:'wallet', key:'din', subs:[['lanc','Lançamentos'],['caixa','Fluxo de caixa'],['apagar','A pagar'],['contas','Contas'],['cartoes','Cartões'],['parc','Parcelas ativas'],['div','Divididos'],['assin','Fixos e assinaturas'],['orc','Orçamento'],['conc','Conciliação']]},
   {tab:'planejar', label:'Planejar', icon:'chart', key:'plan', subs:PLAN_TABS},
-  {tab:'patrimonio', label:'Patrimônio', icon:'pie', key:'pat', subs:[['inv','Investimentos'],['evol','Evolução'],['cart','Carteira'],['reco','Onde investir'],['sim','Simulador'],['metas','Metas'],['dividas','Dívidas']]},
+  {tab:'patrimonio', label:'Patrimônio', icon:'pie', key:'pat', subs:[['inv','Investimentos'],['moeda','Dólar e euro'],['evol','Evolução'],['cart','Carteira'],['reco','Onde investir'],['sim','Simulador'],['metas','Metas'],['dividas','Dívidas']]},
   {tab:'pontos', label:'Milhas', icon:'star', key:'mil', subs:[['carteira','Carteira'],['mov','Movimentos'],['camp','Bônus'],['emis','Emissões'],['metas','Metas'],['vendas','Vendas'],['clubes','Clubes'],['cpf','Beneficiários'],['calc','Simular']]},
   {tab:'viagens', label:'Viagens', icon:'plane', key:'vtab', subs:[['viagens','Viagens'],['comp','Comparativo'],['orc','Orçamentos'],['precos','Monitor de preços'],['moeda','Moeda estrangeira'],['docs','Documentos']]},
 ];
@@ -3631,21 +3639,37 @@ function fxStats(moeda){
 }
 const fxMoedas = () => [...new Set(all('fx').map(f => f.moeda))];
 const fmtQ = v => (+v || 0).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+function fxValorHoje(){ const cot = settings().cot || {}; return fxMoedas().reduce((a, m) => { const st = fxStats(m); return a + Math.max(0, st.saldo) * (+cot[m] || st.avg); }, 0); }
+const fmtCot = v => 'R$ ' + (+v || 0).toLocaleString('pt-BR', {minimumFractionDigits:4, maximumFractionDigits:4});
 function vMoeda(){
-  const ms = fxMoedas();
-  if (!ms.length) return `<section class="card">${emptyBox('fx','green','Registre cada compra de dólar ou euro (Nomad, Wise, casa de câmbio) com o valor pago em reais, IOF incluso. A Caderneta calcula seu câmbio médio, e os gastos da viagem pagos com esse saldo saem pelo custo real.', '<button class="btn pri sm" data-act="add-fx">Registrar compra de moeda</button>')}</section>`;
-  return `<div class="actions"><button class="btn pri sm" data-act="add-fx">${ic('plus')}Comprar moeda</button></div>` + ms.map(m => { const s = fxStats(m); return `<section class="card"><div class="card-head"><div class="row">${tile('fx','green')}<h3>${esc(m)}</h3></div><span class="label">câmbio médio <b class="money" style="color:var(--ink)">R$ ${s.avg.toLocaleString('pt-BR', {minimumFractionDigits:4, maximumFractionDigits:4})}</b></span></div>
-    <div class="stats3"><div class="card stat" style="box-shadow:none;background:var(--card-2)"><span class="label">Saldo em ${esc(m)}</span><b>${fmtQ(s.saldo)}</b><small>≈ ${brl0(s.saldo * s.avg)}</small></div><div class="card stat" style="box-shadow:none;background:var(--card-2)"><span class="label">Comprado</span><b>${fmtQ(s.q)}</b><small>${brl0(s.brl)} pagos</small></div><div class="card stat" style="box-shadow:none;background:var(--card-2)"><span class="label">Gasto em viagens</span><b>${fmtQ(s.used)}</b><small>≈ ${brl0(s.used * s.avg)}</small></div></div>
-    <div class="dayhead">Compras</div><div class="list">${s.buys.map(f => `<div class="item" role="button" tabindex="0" data-edit="fx" data-id="${f.id}">${tile('plus','green')}<div class="main"><div class="t">${fmtQ(f.qtd)} ${esc(m)}${f.ex ? '<span class="chip ex">exemplo</span>' : ''}</div><div class="m">${fmtD(f.data)}${f.onde ? ' · ' + esc(f.onde) : ''} · câmbio efetivo R$ ${(f.brl / f.qtd).toLocaleString('pt-BR', {minimumFractionDigits:4, maximumFractionDigits:4})}</div></div><div class="amt">${brl(f.brl)}</div></div>`).join('')}</div>
-    ${s.gastos.length ? `<div class="dayhead">Pagos com o saldo</div><div class="list">${s.gastos.slice(0, 12).map(c => `<div class="item">${catTile(c.cat)}<div class="main"><div class="t">${esc(c.desc || c.cat)}</div><div class="m">${fmtD(c.data)} · ${esc(get(c.trip)?.destino || '')}</div></div><div class="amt">${esc(m)} ${fmtQ(c.valorMoeda)}<div class="m">${brl(c.valor)}</div></div></div>`).join('')}</div>` : ''}
-  </section>`; }).join('') + `<p class="foot" style="margin:0">Câmbio médio = total pago em reais (com IOF e tarifas) ÷ total de moeda comprada. Ao lançar um gasto de viagem nessa moeda, marque “Pagar com o saldo em moeda” para usar esse câmbio.</p>`;
+  const ms = fxMoedas(), cot = settings().cot || {};
+  if (!ms.length) return `<section class="card">${emptyBox('fx','green','Registre cada compra de dólar ou euro (Nomad, Wise, C6 Global, casa de câmbio): quanto comprou e quanto pagou em reais, com IOF e tarifas. A Caderneta guarda o câmbio de cada compra, calcula o seu câmbio médio e quanto esse dinheiro vale hoje.', '<button class="btn pri sm" data-act="add-fx">Registrar compra de moeda</button>')}</section>`;
+  return `<div class="actions"><button class="btn pri sm" data-act="add-fx">${ic('plus')}Comprar moeda</button></div>` + ms.map(m => {
+    const st = fxStats(m), ch = +cot[m] || 0, hoje = st.saldo * (ch || st.avg), res = ch ? st.saldo * (ch - st.avg) : 0, buys = st.buys.slice().sort((a, b) => a.data < b.data ? -1 : 1);
+    return `<section class="card"><div class="card-head"><div class="row">${tile('fx','green')}<div><h3>${esc(m)} ${fmtQ(st.saldo)}</h3><span class="label">câmbio médio ${fmtCot(st.avg)}</span></div></div>${ch ? `<div style="text-align:right"><b class="money">${brl(hoje)}</b><div class="small ${res >= 0 ? 'pos' : 'neg'}">${res >= 0 ? '+' : ''}${brl(res)} pela cotação de ${fmtCot(ch)}</div></div>` : ''}</div>
+      ${buys.length >= 2 ? lineSvg(buys.map(f => f.brl / f.qtd), buys.map(f => fmtD(f.data).replace(/ \d{4}$/, '')), {aria:'Câmbio pago em cada compra', h:140, ref:st.avg, refLabel:'médio', color:'var(--h-green)', noZero:true}) : ''}
+      <div class="stats3"><div class="card stat" style="box-shadow:none;background:var(--card-2)"><span class="label">Comprado</span><b>${fmtQ(st.q)}</b><small>${brl0(st.brl)} pagos</small></div><div class="card stat" style="box-shadow:none;background:var(--card-2)"><span class="label">Gasto</span><b>${fmtQ(st.used)}</b><small>em viagens</small></div><div class="card stat" style="box-shadow:none;background:var(--card-2)"><span class="label">Saldo</span><b>${fmtQ(st.saldo)}</b><small>${esc(m)}</small></div></div>
+      <div class="dayhead">Histórico de compras</div><div class="list">${st.buys.map(f => { const ef = f.brl / f.qtd, sp = +f.comercial ? (ef / +f.comercial - 1) * 100 : null; return `<div class="item" role="button" tabindex="0" data-edit="fx" data-id="${f.id}">${tile('plus','green')}<div class="main"><div class="t">${fmtQ(f.qtd)} ${esc(m)}${f.ex ? '<span class="chip ex">exemplo</span>' : ''}</div><div class="m">${fmtD(f.data)}${f.onde ? ' · ' + esc(f.onde) : ''} · câmbio <b>${fmtCot(ef)}</b>${sp != null ? ` · ${sp >= 0 ? '+' : ''}${sp.toFixed(1).replace('.', ',')}% sobre o comercial (${fmtCot(f.comercial)})` : ''}</div></div><div class="amt">${brl(f.brl)}</div></div>`; }).join('')}</div>
+      ${st.gastos.length ? `<div class="dayhead">Usado em viagens</div><div class="list">${st.gastos.slice(0, 12).map(c => `<div class="item">${catTile(c.cat)}<div class="main"><div class="t">${esc(c.desc || c.cat)}</div><div class="m">${fmtD(c.data)} · ${esc(get(c.trip)?.destino || '')}</div></div><div class="amt">${esc(m)} ${fmtQ(c.valorMoeda)}<div class="m">${brl(c.valor)}</div></div></div>`).join('')}</div>` : ''}
+    </section>`; }).join('') + `<p class="foot" style="margin:0">Câmbio de cada compra = total pago em reais (com IOF, spread e tarifas) ÷ moeda recebida. O valor de hoje usa a cotação dos Ajustes e entra no seu patrimônio. Se você também cadastrou essa conta em dólar como investimento, apague um dos dois para não contar duas vezes.</p>`;
 }
 function formFx(f){
   const isNew = !f; f = f || {moeda:'USD', data:today()};
-  const fields = [{k:'moeda', label:'Moeda', type:'select', options:FX_MOEDAS}, {k:'qtd', label:'Quantidade comprada', type:'number'}, {k:'brl', label:'Total pago em reais (R$)', type:'number', hint:'Com IOF, spread e tarifas'}, {k:'data', label:'Data', type:'date'}, {k:'onde', label:'Onde comprou', ph:'Nomad, Wise, casa de câmbio'}, {k:'obs', label:'Observações', full:true}];
-  openSheet({title: isNew ? 'Compra de moeda' : 'Editar compra', fields, data:f, onDelete: isNew ? null : () => del(f.id), extra:'<div id="fx-prev" class="note" style="margin-top:8px"></div>',
-    onInput: v => { const el = $('#fx-prev'); if (el) el.textContent = +v.qtd > 0 && +v.brl > 0 ? `Câmbio efetivo: R$ ${(v.brl / v.qtd).toLocaleString('pt-BR', {minimumFractionDigits:4, maximumFractionDigits:4})} por ${v.moeda}` : ''; },
-    onSave: v => { if (!(v.qtd > 0) || !(v.brl > 0)) return 'Informe a quantidade e o valor pago.'; put({...f, ...v, qtd:+v.qtd, brl:CALC.r2(v.brl), kind:'fx', id:f.id || uid('fx')}); }});
+  const fields = [{k:'moeda', label:'Moeda', type:'select', options:FX_MOEDAS}, {k:'qtd', label:'Quanto comprou (na moeda)', type:'number', hint:'Ex.: 33'},
+    {k:'brl', label:'Total pago em reais (R$)', type:'number', hint:'Com IOF e tarifas: o que saiu da sua conta'}, {k:'cotPaga', label:'Ou: câmbio usado (R$ por unidade)', type:'number', hint:'Se não souber o total, informe a cotação da compra'},
+    {k:'comercial', label:'Cotação comercial no dia (opcional)', type:'number', hint:'Para ver quanto pagou acima do comercial'},
+    {k:'data', label:'Data', type:'date'}, {k:'onde', label:'Onde comprou', ph:'Nomad, Wise, C6 Global, casa de câmbio'},
+    ...(isNew && contaOpts().length ? [{k:'conta', label:'Saiu da conta', type:'select', options:[['', 'Não registrar na conta'], ...contaOpts()]}] : []),
+    {k:'obs', label:'Observações', full:true}];
+  openSheet({title: isNew ? 'Compra de moeda' : 'Editar compra', fields, data:{...f, cotPaga:''}, onDelete: isNew ? null : () => { if (f.txId && get(f.txId)) del(f.txId); del(f.id); }, extra:'<div id="fx-prev" class="callout" style="margin-top:8px" hidden></div>',
+    onInput: v => { const el = $('#fx-prev'); if (!el) return; const tot = +v.brl > 0 ? +v.brl : (+v.cotPaga > 0 && +v.qtd > 0 ? +v.qtd * +v.cotPaga : 0); if (!(+v.qtd > 0) || !tot){ el.hidden = true; return; } const ef = tot / +v.qtd, sp = +v.comercial ? (ef / +v.comercial - 1) * 100 : null, st = fxStats(v.moeda), nq = st.q + (isNew ? +v.qtd : 0), nb = st.brl + (isNew ? tot : 0); el.hidden = false; el.innerHTML = `Câmbio desta compra: <b>${fmtCot(ef)}</b> por ${esc(v.moeda)}${+v.brl > 0 ? '' : ` · total ${brl(tot)}`}${sp != null ? `<br>${sp >= 0 ? '+' : ''}${sp.toFixed(2).replace('.', ',')}% acima do comercial (IOF + spread + tarifas)` : ''}${nq ? `<br>Câmbio médio depois desta compra: <b>${fmtCot(nb / nq)}</b>` : ''}`; },
+    onSave: v => {
+      const tot = +v.brl > 0 ? +v.brl : (+v.cotPaga > 0 && +v.qtd > 0 ? +v.qtd * +v.cotPaga : 0);
+      if (!(v.qtd > 0) || !(tot > 0)) return 'Informe quanto comprou e o total pago (ou o câmbio usado).';
+      const item = {...f, moeda:v.moeda, qtd:+v.qtd, brl:CALC.r2(tot), comercial:+v.comercial || 0, data:v.data, onde:v.onde, obs:v.obs, kind:'fx', id:f.id || uid('fx')}, list = [item];
+      if (isNew && v.conta){ const tx = {id:uid('tx'), kind:'tx', tipo:'transf', valor:CALC.r2(tot), desc:`Compra de ${fmtQ(v.qtd)} ${v.moeda}`, data:v.data, conta:v.conta, contaDest:'', invNome:`${v.moeda} ${v.onde || ''}`.trim(), pago:true, cartao:'', fatura:''}; item.txId = tx.id; list.push(tx); }
+      putMany(list); toast(`Compra registrada: câmbio ${fmtCot(tot / +v.qtd)}`);
+    }});
 }
 
 /* ---------- 3. Documentos e prazos ---------- */
@@ -4285,7 +4309,7 @@ function invHistHtml(i){
 function formInvMov(i, tipo, pre = {}){
   const s = settings(), r = CALC.evaluate(i, s, today()), fx = i.moeda && i.moeda !== 'BRL', fxr = r.fxr || 1;
   const fields = tipo === 'saldo'
-    ? [{k:'vm', label: fx ? `Saldo atual (${i.moeda})` : 'Saldo atual (R$)', type:'number', def: CALC.r2(fx ? r.bm : r.bruto)}, ...(+i.qtd ? [{k:'qtd', label:'Quantidade', type:'number', def:i.qtd}, {k:'preco', label:`Preço atual (${i.moeda || 'R$'})`, type:'number', def:i.precoAtual}] : []), {k:'d', label:'Data', type:'date', def:today()}]
+    ? [{k:'vm', label: fx ? `Saldo atual (${i.moeda})` : 'Valor total / saldo bruto (R$)', type:'number', def: CALC.r2(fx ? r.bm : r.bruto)}, ...(fx ? [] : [{k:'lq', label:'Disponível para resgate (líquido, opcional)', type:'number', hint:'Copie do app do banco: a Caderneta usa esse valor no lugar da estimativa'}]), ...(+i.qtd ? [{k:'qtd', label:'Quantidade', type:'number', def:i.qtd}, {k:'preco', label:`Preço atual (${i.moeda || 'R$'})`, type:'number', def:i.precoAtual}] : []), {k:'d', label:'Data', type:'date', def:today()}]
     : [{k:'v', label:'Valor (R$)', type:'number', def:pre.v, hint: tipo === 'resgate' ? `Hoje ≈ ${brl(r.bruto)} bruto · ${invLiq(i).txt}` : ''}, ...(tipo === 'aporte' && +i.qtd ? [{k:'q', label:'Quantidade comprada', type:'number'}] : []), {k:'d', label:'Data', type:'date', def:pre.d || today()}, {k:'conta', label: tipo === 'aporte' ? 'Saiu da conta' : 'Entrou na conta', type:'select', options:[['', 'Não registrar na conta'], ...contaOpts()], def:pre.conta}, {k:'obs', label:'Observação', full:true}];
   openSheet({title:`${INVMOV[tipo][0]} · ${i.nome}`, fields, saveLabel:'Registrar',
     extra: tipo === 'provento' ? '<p class="note">Dividendos, juros e cupons recebidos. Na conta escolhida, entra como receita (Rendimentos).</p>' : tipo === 'resgate' ? '<p class="note">O valor sai do investimento e entra na conta, sem contar como receita. Resgatou tudo? Informe o valor total: o investimento é encerrado e fica no histórico. <b>Data futura = resgate programado</b>, confirmado no dia.</p>' : tipo === 'aporte' ? '<p class="note">O valor sai da conta e entra no investimento, sem contar como despesa. <b>Data futura = aporte programado</b>: não mexe no saldo até você confirmar no dia (aparece em A pagar e no Fluxo).</p>' : '<p class="note">O saldo fica guardado no histórico e a estimativa recomeça a partir dele.</p>',
@@ -4294,7 +4318,8 @@ function formInvMov(i, tipo, pre = {}){
       if (tipo === 'saldo'){
         if (+v.qtd && +v.preco){ it.qtd = +v.qtd; it.precoAtual = +v.preco; }
         else { if (!(+v.vm >= 0)) return 'Informe o saldo.'; it.saldoReal = +v.vm; it.dataSaldo = d; if (+it.qtd && +it.precoAtual) it.precoAtual = +v.vm / +it.qtd; }
-        h.push({id:uid('h'), d, tipo, v:CALC.r2((+v.qtd && +v.preco ? +v.qtd * +v.preco : +v.vm) * fr), vm: fx ? (+v.qtd && +v.preco ? +v.qtd * +v.preco : +v.vm) : null});
+        if (+v.lq > 0){ it.liqBanco = +v.lq; it.liqData = d; } else { it.liqBanco = 0; it.liqData = ''; }
+        h.push({id:uid('h'), d, tipo, v:CALC.r2((+v.qtd && +v.preco ? +v.qtd * +v.preco : +v.vm) * fr), vm: fx ? (+v.qtd && +v.preco ? +v.qtd * +v.preco : +v.vm) : null, obs: +v.lq > 0 ? `líquido no banco ${brl(v.lq)}` : ''});
       } else {
         if (!(+v.v > 0)) return 'Informe o valor.';
         const val = +v.v;
@@ -4641,6 +4666,7 @@ function fabAction(){
   if (UI.tab === 'dinheiro'){ if (UI.din === 'contas') return formConta(); if (UI.din === 'cartoes') return formCartao(); if (UI.din === 'orc') return formBud(); return formTx(); }
   if (UI.tab === 'planejar') return formTx();
   if (UI.tab === 'patrimonio' && UI.pat === 'reco') return formOfertas();
+  if (UI.tab === 'patrimonio' && UI.pat === 'moeda') return formFx();
   if (UI.tab === 'patrimonio'){ if (UI.pat === 'metas') return formMeta(); if (UI.pat === 'dividas') return formDivida(); return formInv(); }
   if (UI.tab === 'pontos' && UI.mil === 'metas') return formMgoal();
   if (UI.tab === 'pontos' && UI.mil === 'cpf') return formBenef();
