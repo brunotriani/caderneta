@@ -1493,6 +1493,7 @@ function formSettings(){
       <div class="actions"><button class="btn sm pri" data-act="sync-export">${ic('arrows')}Gerar arquivo de sincronização</button><button class="btn sm" data-act="import">${ic('doc')}Importar arquivo</button></div>
       <div class="actions"><button class="btn sm" data-act="import-bank">${ic('bank')}Importar extrato do banco</button><button class="btn sm" data-act="change-pass">${ic('lock')}Trocar usuário ou senha</button></div>
       <div class="actions"><button class="btn sm" data-act="pin">${ic('key')}${pinDoc() ? 'PIN ativo · trocar' : 'Ativar PIN de 6 dígitos'}</button><button class="btn sm" data-act="xlsx">${ic('sheet')}Exportar para Excel</button><button class="btn sm" data-act="rules">${ic('rule')}Regras de categoria (${all('rule').length})</button><button class="btn sm" data-act="log">${ic('history')}Histórico de alterações</button></div>
+      <div class="actions"><button class="btn sm pri" data-act="app-check">${ic('download')}Procurar atualização</button><span class="small muted" style="align-self:center">Versão ${APP_VERSION}</span></div>
       <div class="actions"><button class="btn sm danger" data-act="reset-meses">${ic('calendar')}Apagar meses</button><button class="btn sm danger" data-act="reset">${ic('x')}Começar do zero</button></div>
       <div class="actions"><button class="btn sm" data-act="export">Backup aberto (sem senha)</button>${[...S.items.values()].some(x=>x.ex)?'<button class="btn sm" data-act="unseed">Apagar exemplos</button>':'<button class="btn sm" data-act="seed">Carregar exemplos</button>'}</div>
       <p class="note" style="margin:0">O backup aberto não tem senha: serve para recuperar tudo se você esquecer a senha. Guarde em local seguro. O app bloqueia sozinho após 5 minutos sem uso ou 1 minuto fora da tela.</p></div>`,
@@ -4642,6 +4643,28 @@ function dinCaixa(){
     <p class="foot" style="margin:0">Cada fatura de cartão entra inteira no mês em que vence, e o que já foi pago ou recebido sai da conta. O saldo do fim do mês passa para o mês seguinte. Gastos do dia a dia ainda não lançados não entram aqui: para essa estimativa, veja Planejar › Fluxo futuro.</p>`;
 }
 
+
+/* ===================== v18.1: ATUALIZAR O APP ===================== */
+const APP_VERSION = '18.1';
+let UPD_LAST = 0;
+async function checkUpdate(manual){
+  if (IN_CLAUDE){ if (manual) toast('Aqui no Claude a Caderneta já abre sempre na versão mais nova'); return; }
+  if (!manual && Date.now() - UPD_LAST < 20 * 60e3) return; UPD_LAST = Date.now();
+  try {
+    if (manual) toast('Procurando atualização…');
+    const html = await (await fetch('./index.html?v=' + Date.now(), {cache:'no-store'})).text(), m = html.match(/const APP_VERSION = '([^']+)'/), ver = m ? m[1] : null;
+    if (ver && ver !== APP_VERSION){ UI.newVer = ver; if (manual) return doUpdate(); render(); }
+    else if (manual) toast(`Você já está na versão mais nova (${APP_VERSION})`);
+  } catch(e){ if (manual) toast('Sem internet agora. Tente de novo em instantes.'); }
+}
+async function doUpdate(){
+  toast('Atualizando…');
+  try { const regs = await navigator.serviceWorker?.getRegistrations?.() || []; for (const r of regs){ try { await r.update(); } catch(e){} } } catch(e){}
+  try { for (const k of await caches.keys()) await caches.delete(k); } catch(e){}
+  setTimeout(() => location.reload(), 400);
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.key) checkUpdate(false); });
+
 /* ===================== RENDER + EVENTOS ===================== */
 function render(){
   renderChrome();
@@ -4657,6 +4680,8 @@ function render(){
   if (S.key && SNAP_DAY !== today()){ SNAP_DAY = today(); setTimeout(snapNow, 2500); }
   const act = document.activeElement, actId = act?.id, selStart = act?.selectionStart;
   $('#view').innerHTML = {inicio:vInicio, dinheiro:vDinheiro, planejar:vPlanejar, patrimonio:vPatrimonio, pontos:vPontos, viagens:vViagens}[UI.tab]();
+  if (UI.newVer && !IN_CLAUDE) $('#view').insertAdjacentHTML('afterbegin', `<div class="banner" style="background:color-mix(in srgb,var(--accent) 14%,var(--card));border-color:transparent">${ic('download')}<span style="flex:1"><b>Nova versão disponível</b> (${esc(UI.newVer)}). Seus dados continuam iguais.</span><button class="btn sm pri" data-act="app-update">Atualizar</button></div>`);
+  if (S.key && !UPD_LAST) setTimeout(() => checkUpdate(false), 3000);
   if (document.getElementById('tripmap')) drawMap();
   document.querySelectorAll('#view .seg').forEach(sg => { const on = sg.querySelector('.on'); if (on && sg.scrollWidth > sg.clientWidth) sg.scrollLeft = on.offsetLeft - (sg.clientWidth - on.offsetWidth) / 2; });
   if (actId && (actId.startsWith('sim-') || actId.startsWith('calc-') || actId.startsWith('apo-') || actId === 'conc-bank' || actId === 'cart-ap' || actId === 'search' || actId === 'chk-new')){ const el = document.getElementById(actId); if (el){ el.focus(); try { if (selStart != null) el.setSelectionRange(selStart, selStart); } catch(e){} } }
@@ -4758,6 +4783,8 @@ document.addEventListener('click', async e => {
   if (a === 'trip-dl'){ const tr = get(UI.tripId); if (tr) downloadDoc(`roteiro-${norm(tr.destino).replace(/[^a-z0-9]+/g, '-').slice(0, 40)}.html`, `Roteiro ${tr.destino}`, tripHtml(tr)); return; }
   if (a === 'ir-print'){ const ano = UI.irAno || new Date().getFullYear() - 1; printDoc(irHtml(ano)); return; }
   if (a === 'compra') return formCompra();
+  if (a === 'app-check'){ closeSheet(); return checkUpdate(true); }
+  if (a === 'app-update') return doUpdate();
   if (a === 'caixa-hoje'){ UI.month = ym(today()); render(); return; }
   if (a === 'reset'){ closeSheet(); return formReset(); }
   if (a === 'reset-meses'){ closeSheet(); return formResetMeses(); }
@@ -4831,6 +4858,6 @@ document.addEventListener('keydown', e => {
 
 render(); initStore();
 </script>
-<script>if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));</script>
+<script>if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js', {updateViaCache:'none'}).catch(() => {}));</script>
 </body>
 </html>
