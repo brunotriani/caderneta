@@ -179,6 +179,7 @@ details summary{list-style:none} details summary::-webkit-details-marker{display
 .banner{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:14px;font-size:14px;background:color-mix(in srgb,var(--h-purple) 12%,var(--card));border:1px solid color-mix(in srgb,var(--h-purple) 22%,transparent)}
 .banner>.ic{color:var(--h-purple);width:20px;height:20px}
 .banner span{flex:1;min-width:0}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid var(--line, #0000000f);font-size:14px}.kv>span{min-width:0}.kv>b{white-space:nowrap;text-align:right}
 .banner.warn{background:color-mix(in srgb,var(--warn) 12%,var(--card));border-color:color-mix(in srgb,var(--warn) 25%,transparent)}
 .banner.warn>.ic{color:var(--warn)}
 .callout{border-radius:14px;padding:12px 14px;font-size:14px;background:var(--card-2);line-height:1.45}
@@ -3643,34 +3644,89 @@ const fmtQ = v => (+v || 0).toLocaleString('pt-BR', {minimumFractionDigits:2, ma
 function fxValorHoje(){ const cot = settings().cot || {}; return fxMoedas().reduce((a, m) => { const st = fxStats(m); return a + Math.max(0, st.saldo) * (+cot[m] || st.avg); }, 0); }
 const fmtCot = v => 'R$ ' + (+v || 0).toLocaleString('pt-BR', {minimumFractionDigits:4, maximumFractionDigits:4});
 function vMoeda(){
-  const ms = fxMoedas(), cot = settings().cot || {};
+  const ms = fxMoedas(), cot = settings().cot || {}; setTimeout(fxFillOld, 500);
   if (!ms.length) return `<section class="card">${emptyBox('fx','green','Registre cada compra de dólar ou euro (Nomad, Wise, C6 Global, casa de câmbio): quanto comprou e quanto pagou em reais, com IOF e tarifas. A Caderneta guarda o câmbio de cada compra, calcula o seu câmbio médio e quanto esse dinheiro vale hoje.', '<button class="btn pri sm" data-act="add-fx">Registrar compra de moeda</button>')}</section>`;
   return `<div class="actions"><button class="btn pri sm" data-act="add-fx">${ic('plus')}Comprar moeda</button></div>` + ms.map(m => {
     const st = fxStats(m), ch = +cot[m] || 0, hoje = st.saldo * (ch || st.avg), res = ch ? st.saldo * (ch - st.avg) : 0, buys = st.buys.slice().sort((a, b) => a.data < b.data ? -1 : 1);
     return `<section class="card"><div class="card-head"><div class="row">${tile('fx','green')}<div><h3>${esc(m)} ${fmtQ(st.saldo)}</h3><span class="label">câmbio médio ${fmtCot(st.avg)}</span></div></div>${ch ? `<div style="text-align:right"><b class="money">${brl(hoje)}</b><div class="small ${res >= 0 ? 'pos' : 'neg'}">${res >= 0 ? '+' : ''}${brl(res)} pela cotação de ${fmtCot(ch)}</div></div>` : ''}</div>
       ${buys.length >= 2 ? lineSvg(buys.map(f => f.brl / f.qtd), buys.map(f => fmtD(f.data).replace(/ \d{4}$/, '')), {aria:'Câmbio pago em cada compra', h:140, ref:st.avg, refLabel:'médio', color:'var(--h-green)', noZero:true}) : ''}
       <div class="stats3"><div class="card stat" style="box-shadow:none;background:var(--card-2)"><span class="label">Comprado</span><b>${fmtQ(st.q)}</b><small>${brl0(st.brl)} pagos</small></div><div class="card stat" style="box-shadow:none;background:var(--card-2)"><span class="label">Gasto</span><b>${fmtQ(st.used)}</b><small>em viagens</small></div><div class="card stat" style="box-shadow:none;background:var(--card-2)"><span class="label">Saldo</span><b>${fmtQ(st.saldo)}</b><small>${esc(m)}</small></div></div>
-      <div class="dayhead">Histórico de compras</div><div class="list">${st.buys.map(f => { const ef = f.brl / f.qtd, sp = +f.comercial ? (ef / +f.comercial - 1) * 100 : null; return `<div class="item" role="button" tabindex="0" data-edit="fx" data-id="${f.id}">${tile('plus','green')}<div class="main"><div class="t">${fmtQ(f.qtd)} ${esc(m)}${f.ex ? '<span class="chip ex">exemplo</span>' : ''}</div><div class="m">${fmtD(f.data)}${f.onde ? ' · ' + esc(f.onde) : ''} · câmbio <b>${fmtCot(ef)}</b>${sp != null ? ` · ${sp >= 0 ? '+' : ''}${sp.toFixed(1).replace('.', ',')}% sobre o comercial (${fmtCot(f.comercial)})` : ''}</div></div><div class="amt">${brl(f.brl)}</div></div>`; }).join('')}</div>
+      <div class="dayhead">Histórico de compras</div><div class="list">${st.buys.map(f => { const ef = f.brl / f.qtd, sp = +f.comercial ? (ef / +f.comercial - 1) * 100 : null; return `<div class="item" role="button" tabindex="0" data-edit="fx" data-id="${f.id}">${tile('plus','green')}<div class="main"><div class="t">${fmtQ(f.qtd)} ${esc(m)}${f.ex ? '<span class="chip ex">exemplo</span>' : ''}</div><div class="m">${f.dataCaiu ? `enviado ${fmtD(f.data)} · caiu ${fmtD(f.dataCaiu)}` : fmtD(f.data)}${f.onde ? ' · ' + esc(f.onde) : ''} · câmbio <b>${fmtCot(ef)}</b>${sp != null ? `<br>comercial ${fmtCot(f.comercial)} · pagou ${brl(f.brl - f.qtd * f.comercial)} a mais` : ''}</div></div><div class="amt">${brl(f.brl)}${sp != null ? `<div><span class="chip" style="background:color-mix(in srgb,var(--h-orange) 14%,transparent);color:var(--h-orange)">${pctTxt(sp)}</span></div>` : ''}</div></div>`; }).join('')}</div>
       ${st.gastos.length ? `<div class="dayhead">Usado em viagens</div><div class="list">${st.gastos.slice(0, 12).map(c => `<div class="item">${catTile(c.cat)}<div class="main"><div class="t">${esc(c.desc || c.cat)}</div><div class="m">${fmtD(c.data)} · ${esc(get(c.trip)?.destino || '')}</div></div><div class="amt">${esc(m)} ${fmtQ(c.valorMoeda)}<div class="m">${brl(c.valor)}</div></div></div>`).join('')}</div>` : ''}
-    </section>`; }).join('') + `<p class="foot" style="margin:0">Câmbio de cada compra = total pago em reais (com IOF, spread e tarifas) ÷ moeda recebida. O valor de hoje usa a cotação dos Ajustes e entra no seu patrimônio. Se você também cadastrou essa conta em dólar como investimento, apague um dos dois para não contar duas vezes.</p>`;
+    </section>`; }).join('') + `<p class="foot" style="margin:0">Câmbio de cada compra = quanto custou em reais (com IOF, spread e tarifas) ÷ quanto recebeu. A cotação comercial é buscada sozinha pela data do envio (AwesomeAPI ou PTAX do Banco Central); a diferença para ela é o que você pagou a mais. O valor de hoje usa a cotação do dia (atualizada sozinha quando há internet, ou a dos Ajustes) e entra no seu patrimônio. Se você também cadastrou essa conta em dólar como investimento, apague um dos dois para não contar duas vezes.</p>`;
 }
+/* Cotação comercial do dia: AwesomeAPI e, se falhar, PTAX do Banco Central. Guarda em memória para não buscar de novo. */
+const FX_CACHE = {};
+const ymd = d => d.replace(/-/g, '');
+async function fxFetch(url, ms = 7000){ const c = new AbortController(), t = setTimeout(() => c.abort(), ms); try { const r = await fetch(url, {signal:c.signal, cache:'no-store'}); if (!r.ok) throw new Error(r.status); return await r.json(); } finally { clearTimeout(t); } }
+async function fxComercial(moeda, data){
+  if (!moeda || !data) return null; const k = moeda + data; if (k in FX_CACHE) return FX_CACHE[k];
+  const ini = addDays(data, -6);
+  let val = null;
+  try { const j = await fxFetch(`https://economia.awesomeapi.com.br/json/daily/${moeda}-BRL/10?start_date=${ymd(ini)}&end_date=${ymd(data)}`); const ok = (Array.isArray(j) ? j : []).filter(x => +x.bid > 0).sort((x, y) => +y.timestamp - +x.timestamp); if (ok.length) val = +(+ok[0].bid).toFixed(4); } catch(e){}
+  if (val == null){ try { const br = d => `${d.slice(5, 7)}-${d.slice(8, 10)}-${d.slice(0, 4)}`; const j = await fxFetch(`https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/CotacaoMoedaPeriodo(moeda=@moeda,dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)?@moeda='${moeda}'&@dataInicial='${br(ini)}'&@dataFinalCotacao='${br(data)}'&$format=json`); const v = (j.value || []).filter(x => x.cotacaoVenda > 0); if (v.length) val = +(+v[v.length - 1].cotacaoVenda).toFixed(4); } catch(e){} }
+  if (val != null) FX_CACHE[k] = val; return val;
+}
+function fxCalc(v){
+  const q = +v.qtd || 0, tot = +v.brl || 0; if (!(q > 0) || !(tot > 0)) return null;
+  const ef = tot / q, com = +v.comercial || 0, noCom = com ? q * com : 0, extra = com ? tot - noCom : null, pct = com ? (ef / com - 1) * 100 : null;
+  const dias = v.data && v.dataCaiu ? CALC.days(v.data, v.dataCaiu) : null;
+  return {ef, com, noCom, extra, pct, dias};
+}
+const pctTxt = (x, d = 1) => `${x >= 0 ? '+' : ''}${x.toFixed(d).replace('.', ',')}%`;
 function formFx(f){
   const isNew = !f; f = f || {moeda:'USD', data:today()};
-  const fields = [{k:'moeda', label:'Moeda', type:'select', options:FX_MOEDAS}, {k:'qtd', label:'Quanto comprou (na moeda)', type:'number', hint:'Ex.: 33'},
-    {k:'brl', label:'Total pago em reais (R$)', type:'number', hint:'Com IOF e tarifas: o que saiu da sua conta'}, {k:'cotPaga', label:'Ou: câmbio usado (R$ por unidade)', type:'number', hint:'Se não souber o total, informe a cotação da compra'},
-    {k:'comercial', label:'Cotação comercial no dia (opcional)', type:'number', hint:'Para ver quanto pagou acima do comercial'},
-    {k:'data', label:'Data', type:'date'}, {k:'onde', label:'Onde comprou', ph:'Nomad, Wise, C6 Global, casa de câmbio'},
+  const fields = [{k:'moeda', label:'Moeda', type:'select', options:FX_MOEDAS}, {k:'qtd', label:'Quanto recebeu (na moeda)', type:'number', hint:'Ex.: 16,40'},
+    {k:'brl', label:'Quanto custou em reais (R$)', type:'number', hint:'O que saiu da sua conta, já com IOF e tarifas'},
+    {k:'data', label:'Data do envio', type:'date'}, {k:'dataCaiu', label:'Data que caiu (opcional)', type:'date'},
+    {k:'comercial', label:'Cotação comercial do dia', type:'number', hint:'Buscada sozinha pela data do envio. Pode corrigir.'},
+    {k:'onde', label:'Onde comprou', ph:'Nomad, Wise, C6 Global, casa de câmbio'},
     ...(isNew && contaOpts().length ? [{k:'conta', label:'Saiu da conta', type:'select', options:[['', 'Não registrar na conta'], ...contaOpts()]}] : []),
     {k:'obs', label:'Observações', full:true}];
-  openSheet({title: isNew ? 'Compra de moeda' : 'Editar compra', fields, data:{...f, cotPaga:''}, onDelete: isNew ? null : () => { if (f.txId && get(f.txId)) del(f.txId); del(f.id); }, extra:'<div id="fx-prev" class="callout" style="margin-top:8px" hidden></div>',
-    onInput: v => { const el = $('#fx-prev'); if (!el) return; const tot = +v.brl > 0 ? +v.brl : (+v.cotPaga > 0 && +v.qtd > 0 ? +v.qtd * +v.cotPaga : 0); if (!(+v.qtd > 0) || !tot){ el.hidden = true; return; } const ef = tot / +v.qtd, sp = +v.comercial ? (ef / +v.comercial - 1) * 100 : null, st = fxStats(v.moeda), nq = st.q + (isNew ? +v.qtd : 0), nb = st.brl + (isNew ? tot : 0); el.hidden = false; el.innerHTML = `Câmbio desta compra: <b>${fmtCot(ef)}</b> por ${esc(v.moeda)}${+v.brl > 0 ? '' : ` · total ${brl(tot)}`}${sp != null ? `<br>${sp >= 0 ? '+' : ''}${sp.toFixed(2).replace('.', ',')}% acima do comercial (IOF + spread + tarifas)` : ''}${nq ? `<br>Câmbio médio depois desta compra: <b>${fmtCot(nb / nq)}</b>` : ''}`; },
+  let manual = !!(f.comercial && f.comAuto === false), lastKey = '', auto = !!f.comAuto;
+  const hint = t => { const h = document.querySelector('#w-comercial .hint'); if (h) h.textContent = t; };
+  const lookup = v => {
+    const key = v.moeda + v.data; if (manual || !v.data || key === lastKey) return; lastKey = key;
+    hint('Buscando a cotação comercial…');
+    fxComercial(v.moeda, v.data).then(val => {
+      if (lastKey !== key || manual) return; const el = document.getElementById('f-comercial'); if (!el) return;
+      if (val){ el.value = String(val); auto = true; hint(`Cotação comercial de ${fmtD(v.data)}, buscada sozinha. Pode corrigir.`); el.dispatchEvent(new Event('input', {bubbles:true})); }
+      else hint('Não consegui buscar agora (sem internet?). Se quiser, digite a cotação do dia.');
+    });
+  };
+  openSheet({title: isNew ? 'Compra de moeda' : 'Editar compra', fields, data:{...f}, onDelete: isNew ? null : () => { if (f.txId && get(f.txId)) del(f.txId); del(f.id); }, extra:'<div id="fx-prev" class="callout" style="margin-top:8px" hidden></div>',
+    onInput: v => {
+      if (!SHEET.fxBound){ const el = document.getElementById('f-comercial'); if (el){ SHEET.fxBound = true; el.addEventListener('input', e => { if (e.isTrusted){ manual = true; auto = false; hint(el.value ? 'Cotação digitada por você.' : 'Em branco: a Caderneta busca de novo.'); if (!el.value){ manual = false; lastKey = ''; } } }); } }
+      if (isNew || !f.comercial) lookup(v);
+      const el = $('#fx-prev'); if (!el) return; const R = fxCalc(v); if (!R){ el.hidden = true; return; }
+      const st = fxStats(v.moeda), nq = st.q - (isNew ? 0 : (f.moeda === v.moeda ? +f.qtd : 0)) + +v.qtd, nb = st.brl - (isNew ? 0 : (f.moeda === v.moeda ? +f.brl : 0)) + +v.brl;
+      el.hidden = false;
+      el.innerHTML = `<span class="small muted">Seu câmbio efetivo (com tudo)</span><div style="font-size:24px;font-weight:700;margin:2px 0 6px">${fmtCot(R.ef)} <span class="small muted" style="font-weight:500">por ${esc(v.moeda)}</span></div>`
+        + (R.com ? `<div class="kv"><span>Valor no comercial (${fmtQ(v.qtd)} × ${fmtCot(R.com).replace('R$ ', '')})</span><b>${brl(R.noCom)}</b></div><div class="kv"><span>Você pagou a mais (IOF + spread + tarifa)</span><b class="${R.extra > 0 ? 'neg' : 'pos'}">${brl(R.extra)} · ${pctTxt(R.pct)}</b></div>` : '')
+        + (R.dias != null ? `<div class="kv"><span>Tempo até cair</span><b>${R.dias < 0 ? 'confira as datas' : R.dias === 0 ? 'no mesmo dia' : R.dias + (R.dias === 1 ? ' dia' : ' dias')}</b></div>` : '')
+        + (nq > 0 ? `<div class="kv"><span>Seu câmbio médio depois desta</span><b>${fmtCot(nb / nq)}</b></div>` : '');
+    },
     onSave: v => {
-      const tot = +v.brl > 0 ? +v.brl : (+v.cotPaga > 0 && +v.qtd > 0 ? +v.qtd * +v.cotPaga : 0);
-      if (!(v.qtd > 0) || !(tot > 0)) return 'Informe quanto comprou e o total pago (ou o câmbio usado).';
-      const item = {...f, moeda:v.moeda, qtd:+v.qtd, brl:CALC.r2(tot), comercial:+v.comercial || 0, data:v.data, onde:v.onde, obs:v.obs, kind:'fx', id:f.id || uid('fx')}, list = [item];
-      if (isNew && v.conta){ const tx = {id:uid('tx'), kind:'tx', tipo:'transf', valor:CALC.r2(tot), desc:`Compra de ${fmtQ(v.qtd)} ${v.moeda}`, data:v.data, conta:v.conta, contaDest:'', invNome:`${v.moeda} ${v.onde || ''}`.trim(), pago:true, cartao:'', fatura:''}; item.txId = tx.id; list.push(tx); }
+      if (!(v.qtd > 0) || !(v.brl > 0)) return 'Informe quanto recebeu e quanto custou em reais.';
+      if (!v.data) return 'Informe a data do envio.';
+      if (v.dataCaiu && v.dataCaiu < v.data) return 'A data que caiu precisa ser no dia do envio ou depois.';
+      const tot = CALC.r2(v.brl), item = {...f, moeda:v.moeda, qtd:+v.qtd, brl:tot, comercial:+v.comercial || 0, comAuto: +v.comercial ? auto && !manual : false, data:v.data, dataCaiu:v.dataCaiu || '', onde:v.onde, obs:v.obs, kind:'fx', id:f.id || uid('fx')}, list = [item];
+      delete item.cotPaga;
+      if (isNew && v.conta){ const tx = {id:uid('tx'), kind:'tx', tipo:'transf', valor:tot, desc:`Compra de ${fmtQ(v.qtd)} ${v.moeda}`, data:v.data, conta:v.conta, contaDest:'', invNome:`${v.moeda} ${v.onde || ''}`.trim(), pago:true, cartao:'', fatura:''}; item.txId = tx.id; list.push(tx); }
+      else if (!isNew && f.txId && get(f.txId)){ const tx = get(f.txId); list.push({...tx, valor:tot, data:v.data, desc:`Compra de ${fmtQ(v.qtd)} ${v.moeda}`}); }
       putMany(list); toast(`Compra registrada: câmbio ${fmtCot(tot / +v.qtd)}`);
     }});
+}
+// Completa a cotação comercial das compras antigas que não têm (uma vez por sessão).
+let FX_FILL = false;
+async function fxFillOld(){
+  if (FX_FILL || IN_CLAUDE) return; FX_FILL = true;
+  const falta = all('fx').filter(f => !(+f.comercial > 0) && f.data && !f.ex).slice(0, 15), upd = [];
+  for (const f of falta){ const v = await fxComercial(f.moeda, f.data); if (v) upd.push({...get(f.id), comercial:v, comAuto:true}); }
+  const st = get('settings') || {}, cot = {...(settings().cot || {})}; let mud = false;
+  for (const m of fxMoedas()){ const v = await fxComercial(m, today()); if (v && Math.abs(v - (+cot[m] || 0)) >= 0.0001){ cot[m] = v; mud = true; } }
+  if (mud) upd.push({...st, id:'settings', kind:'settings', cot});
+  if (upd.length){ await putMany(upd); render(); }
 }
 
 /* ---------- 3. Documentos e prazos ---------- */
@@ -4645,7 +4701,7 @@ function dinCaixa(){
 
 
 /* ===================== v18.1: ATUALIZAR O APP ===================== */
-const APP_VERSION = '18.1';
+const APP_VERSION = '19';
 let UPD_LAST = 0;
 async function checkUpdate(manual){
   if (IN_CLAUDE){ if (manual) toast('Aqui no Claude a Caderneta já abre sempre na versão mais nova'); return; }
